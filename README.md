@@ -9,7 +9,7 @@ The V1 mask is defined in **MNI template space** at **2mm resolution**, derived 
 /lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/templates/
 ```
 
-### Atlas files
+Atlas files can be found at:
 
 | Age group | File |
 |-----------|------|
