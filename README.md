@@ -142,3 +142,43 @@ sub-IRN78/
 ```
 This should have successufly saved the each subject output for masked epi, inverse affine that backnormalize the bold from template to native space, mask in native space etc. 
 
+### Sanity check backnormalized mask 
+Sanity checks and visualisations for one subject's backnorm pipeline output.
+
+Checks performed
+----------------
+1.  DIMENSION CHECK
+      - 3D native mask spatial dims  == raw BOLD spatial dims (x, y, z)
+      - 4D motion mask temporal dim  == raw BOLD temporal dim (n_vols)
+      - 4D motion mask spatial dims  == raw BOLD spatial dims
+
+2.  VOXEL COUNT / VOLUME CHECK
+      - Template mask voxel count and mm³ volume
+      - 3D native mask voxel count and mm³ volume
+      - Ratio should be ~1.0 (same brain region, different voxel sizes)
+      - Each timepoint's slice of the 4D mask should have non-zero voxels
+
+3.  MOTION EFFECT CHECK
+      - Per-timepoint voxel count in 4D mask across the run
+        (should fluctuate slightly due to head motion, not be constant or zero)
+      - Centroid shift of the mask across timepoints (x, y, z)
+
+4.  MASKED EPI SIGNAL CHECK
+      - Mean signal inside mask vs outside mask across time
+      - SNR estimate: mean / std of the within-mask signal timeseries
+      - Check for zero or near-zero frames (failed masking)
+
+Usage:
+```bash 
+python validate_backnorm.py --subject IRN78
+
+python validate_backnorm.py \\
+   --subject IRN78 \\
+   --session 1 \\
+   --run 001 \\
+   --output_dir /lustre/.../faizan_analysis \\
+   --bids_dir   /lustre/.../bids \\
+   --template_mask /lustre/.../binary_mask_...2mm.nii.gz \\
+   --template_bg   /lustre/.../nihpd_asym_02-05_t2w_2mm.nii.gz \\
+   --save_dir  ./sanity_checks
+```
