@@ -114,15 +114,15 @@ sbatch run_back_norm_all_subs.sh
 ```
 Nipype pipeline -- three stages:
 
-```Stage 1``` --   Back-normalize a binary mask from template space to native BOLD
+```Stage 1```:   Back-normalize a binary mask from template space to native BOLD
              space (3D) using the INVERSE of the combined run-to-template
              normalization matrix.
 
-```Stage 2``` --   Build a motion-aware 4D mask by applying each per-volume MCFlirt
+```Stage 2``` :   Build a motion-aware 4D mask by applying each per-volume MCFlirt
              affine to the 3D native mask and merging into a 4D volume whose
              temporal length matches the raw BOLD.
 
-```Stage 3``` --   Mask the raw BOLD element-wise with the 4D motion-aware mask.
+```Stage 3``` :  Mask the raw BOLD element-wise with the 4D motion-aware mask.
 
 **Subjects**  : only 2-month-old subjects (IDs that do NOT end with 'A').
 
