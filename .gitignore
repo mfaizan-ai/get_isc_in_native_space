@@ -1,1 +1,9 @@
 logs/
+runs/
+__pycache__/
+
+
+*.pt
+*.pth
+*.pdf
+*.docx
