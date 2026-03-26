@@ -146,11 +146,11 @@ This should have successufly saved the each subject output for masked epi, inver
 Sanity checks and visualisations for one subject's backnorm pipeline output.
 
 Checks performed
-----------------
+
 1.  DIMENSION CHECK
-      - 3D native mask spatial dims  == raw BOLD spatial dims (x, y, z)
-      - 4D motion mask temporal dim  == raw BOLD temporal dim (n_vols)
-      - 4D motion mask spatial dims  == raw BOLD spatial dims
+      - 3D native mask ```spatial dims  == raw BOLD spatial dims (x, y, z)```
+      - 4D motion mask ```temporal dim  == raw BOLD temporal dim (n_vols)```
+      - 4D motion mask ```spatial dims  == raw BOLD spatial dims```
 
 2.  VOXEL COUNT / VOLUME CHECK
       - Template mask voxel count and mm³ volume
@@ -182,3 +182,7 @@ python validate_backnorm.py \\
    --template_bg   /lustre/.../nihpd_asym_02-05_t2w_2mm.nii.gz \\
    --save_dir  ./sanity_checks
 ```
+
+The following image visualize how the mask are overlayed over the raw bold signal these mask are motion aware as we do ```inv(affine)```
+
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/sanity_checks/sub-IRN78_ses-1_run-001_fig5_motion_mask_frames.png)
