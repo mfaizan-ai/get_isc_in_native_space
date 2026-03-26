@@ -61,7 +61,7 @@ _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DEFAULTS = dict(
     bids_dir         = _BIDS_DIR,
     workingdir       = f"{_BIDS_DIR}/workingdir",
-    mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
+    mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",  # root of the per-run mats tree
     template_mask    = (
         f"{_BIDS_DIR}/derivatives/templates/mask/"
         "binary_mask_from_julichbrainatlas_3.1_207areas_MPM_MNI152"
@@ -400,7 +400,8 @@ def build_run_workflow(
         fsl.ImageMaths(
             in_file   = bold,
             op_string = "-Tmean",
-            out_file  = str(out_dir / f"{pfx}_meanbold.nii.gz"),
+            # no out_file -- nipype manages the name inside the work directory
+            # to avoid stale-cache TraitErrors on re-runs
         ),
         name = "mean_bold",
     )
@@ -415,7 +416,7 @@ def build_run_workflow(
         fsl.ConvertXFM(
             in_file    = fwd_mat,
             invert_xfm = True,
-            out_file   = str(out_dir / f"{pfx}_norm_matrix_inverse.mat"),
+            # no out_file -- managed by nipype in work directory
         ),
         name = "invert_mat",
     )
