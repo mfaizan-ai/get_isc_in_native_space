@@ -5,16 +5,11 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --time=30:00:00
 
 # =============================================================================
-# run_backnorm.sh
-#
-# Submits backnorm_pipeline.py to SLURM for all 2-month subjects.
-#
 # Usage:
 #   sbatch run_backnorm.sh
-#
 # To process specific subjects only:
 #   sbatch run_backnorm.sh IRN78 IRC13
 #
@@ -33,11 +28,11 @@ export PATH=${FSLDIR}/bin:${PATH}
 
 # -- Python / conda environment -----------------------------------------------
 # Activate whichever environment has nipype + nibabel installed
-source activate isc_analysis    # replace 'base' with your env name if different
+source ~/.bashrc
+conda activate isc_analysis    # replace 'base' with your env name if different
 
 # -- Pipeline script location -------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PIPELINE="${SCRIPT_DIR}/back_norm_all_sub.py"
+PIPELINE="back_norm_all_sub.py"
 
 # -- Number of parallel nipype processes = CPUs allocated by SLURM ------------
 N_PROCS=${SLURM_CPUS_PER_TASK:-4}
@@ -63,11 +58,11 @@ echo "======================================================================"
 
 # -- Run ----------------------------------------------------------------------
 if [ ${#SUBJECTS[@]} -gt 0 ]; then
-    python "${PIPELINE}" \
+    python -u "${PIPELINE}" \
         --n_procs "${N_PROCS}" \
         --subjects "${SUBJECTS[@]}"
 else
-    python "${PIPELINE}" \
+    python -u "${PIPELINE}" \
         --n_procs "${N_PROCS}"
 fi
 
