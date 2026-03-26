@@ -170,9 +170,9 @@ Checks performed
 
 Usage:
 ```bash 
-python validate_backnorm.py --subject IRN78
+python sanity_check_backnorm.py --subject IRN78
 
-python validate_backnorm.py \\
+python sanity_check_backnorm.py \\
    --subject IRN78 \\
    --session 1 \\
    --run 001 \\

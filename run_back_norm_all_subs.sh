@@ -63,11 +63,11 @@ echo "======================================================================"
 
 # -- Run ----------------------------------------------------------------------
 if [ ${#SUBJECTS[@]} -gt 0 ]; then
-    python "${PIPELINE}" \
+    python -u "${PIPELINE}" \
         --n_procs "${N_PROCS}" \
         --subjects "${SUBJECTS[@]}"
 else
-    python "${PIPELINE}" \
+    python -u "${PIPELINE}" \
         --n_procs "${N_PROCS}"
 fi
 
