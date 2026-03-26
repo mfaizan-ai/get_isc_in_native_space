@@ -1,60 +1,4 @@
 #!/usr/bin/env python3
-"""
-validate_backnorm.py
-====================
-Sanity checks and visualisations for one subject's backnorm pipeline output.
-
-Checks performed
-----------------
-1.  DIMENSION CHECK
-      - 3D native mask spatial dims  == raw BOLD spatial dims (x, y, z)
-      - 4D motion mask temporal dim  == raw BOLD temporal dim (n_vols)
-      - 4D motion mask spatial dims  == raw BOLD spatial dims
-
-2.  VOXEL COUNT / VOLUME CHECK
-      - Template mask voxel count and mm³ volume
-      - 3D native mask voxel count and mm³ volume
-      - Ratio should be ~1.0 (same brain region, different voxel sizes)
-      - Each timepoint's slice of the 4D mask should have non-zero voxels
-
-3.  MOTION EFFECT CHECK
-      - Per-timepoint voxel count in 4D mask across the run
-        (should fluctuate slightly due to head motion, not be constant or zero)
-      - Centroid shift of the mask across timepoints (x, y, z)
-
-4.  MASKED EPI SIGNAL CHECK
-      - Mean signal inside mask vs outside mask across time
-      - SNR estimate: mean / std of the within-mask signal timeseries
-      - Check for zero or near-zero frames (failed masking)
-
-Visualisations saved
---------------------
-  fig1_template_vs_native_mask.png
-      Mosaic: template mask on NIHPD T2w | 3D native mask on mean BOLD
-  fig2_4d_mask_motion.png
-      Per-timepoint voxel count and centroid (x, y, z) across volumes
-  fig3_masked_epi_signal.png
-      Within-mask mean signal timeseries + SNR + fraction-masked per volume
-  fig4_mask_slices_native.png
-      Multi-slice overlay of 3D native mask on mean BOLD (axial/coronal/sagittal)
-  fig5_motion_mask_frames.png
-      Overlay of the mask at selected timepoints to visualise motion shift
-
-Usage
------
-    python validate_backnorm.py --subject IRN78
-
-    python validate_backnorm.py \\
-        --subject IRN78 \\
-        --session 1 \\
-        --run 001 \\
-        --output_dir /lustre/.../faizan_analysis \\
-        --bids_dir   /lustre/.../bids \\
-        --template_mask /lustre/.../binary_mask_...2mm.nii.gz \\
-        --template_bg   /lustre/.../nihpd_asym_02-05_t2w_2mm.nii.gz \\
-        --save_dir  ./sanity_checks
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -70,7 +14,6 @@ import numpy as np
 # =============================================================================
 # Defaults  (mirror the pipeline defaults)
 # =============================================================================
-
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
@@ -92,7 +35,6 @@ DEFAULTS = dict(
 # =============================================================================
 # CLI
 # =============================================================================
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -120,7 +62,6 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 # Path resolution
 # =============================================================================
-
 def resolve_paths(args) -> dict:
     """
     Locate all required files for the chosen subject/session/run.
@@ -191,7 +132,6 @@ def resolve_paths(args) -> dict:
 # =============================================================================
 # Helper utilities
 # =============================================================================
-
 def load(path) -> tuple:
     """Load NIfTI, return (data_float32, img)."""
     img  = nib.load(str(path))
@@ -247,7 +187,6 @@ def overlay_mosaic(ax_row, bg, mask, slices, bg_clim, title=""):
 # =============================================================================
 # Check 1 — Dimensions
 # =============================================================================
-
 def check_dimensions(files: dict) -> dict:
     print("\n" + "=" * 60)
     print("CHECK 1 — DIMENSIONS")
@@ -290,7 +229,6 @@ def check_dimensions(files: dict) -> dict:
 # =============================================================================
 # Check 2 — Voxel counts & volumes
 # =============================================================================
-
 def check_voxel_counts(files: dict) -> dict:
     print("\n" + "=" * 60)
     print("CHECK 2 — VOXEL COUNTS & VOLUMES")
@@ -329,7 +267,6 @@ def check_voxel_counts(files: dict) -> dict:
 # =============================================================================
 # Check 3 — Motion effect on mask centroid
 # =============================================================================
-
 def check_motion_effect(files: dict) -> dict:
     """
     Derive a binary mask per timepoint from the masked BOLD:
@@ -377,7 +314,6 @@ def check_motion_effect(files: dict) -> dict:
 # =============================================================================
 # Check 4 — Masked EPI signal
 # =============================================================================
-
 def check_masked_epi(files: dict) -> dict:
     """
     Compare masked BOLD signal against raw BOLD to validate masking quality.
@@ -432,7 +368,6 @@ def check_masked_epi(files: dict) -> dict:
 # =============================================================================
 # Figure 1 — Template vs native mask mosaic
 # =============================================================================
-
 def fig_template_vs_native(files: dict, save_dir: Path, tag: str):
     print("\n  Plotting fig1: template vs native mask overlay ...")
 
@@ -466,7 +401,6 @@ def fig_template_vs_native(files: dict, save_dir: Path, tag: str):
 # =============================================================================
 # Figure 2 — Motion effect on 4D mask
 # =============================================================================
-
 def fig_motion_effect(motion: dict, vox_counts: dict,
                       save_dir: Path, tag: str):
     print("  Plotting fig2: motion effect on 4D mask ...")
@@ -506,7 +440,6 @@ def fig_motion_effect(motion: dict, vox_counts: dict,
 # =============================================================================
 # Figure 3 — Masked EPI signal timeseries
 # =============================================================================
-
 def fig_masked_epi_signal(epi: dict, save_dir: Path, tag: str):
     print("  Plotting fig3: masked EPI signal ...")
 
@@ -558,7 +491,6 @@ def fig_masked_epi_signal(epi: dict, save_dir: Path, tag: str):
 # =============================================================================
 # Figure 4 — Multi-plane mask slices on mean BOLD (axial/coronal/sagittal)
 # =============================================================================
-
 def fig_mask_slices_native(files: dict, save_dir: Path, tag: str):
     print("  Plotting fig4: multi-plane 3D native mask on mean BOLD ...")
 
@@ -620,7 +552,6 @@ def fig_mask_slices_native(files: dict, save_dir: Path, tag: str):
 # =============================================================================
 # Figure 5 — Motion mask at selected timepoints
 # =============================================================================
-
 def fig_motion_mask_frames(files: dict, save_dir: Path, tag: str,
                            n_frames: int = 8):
     """
@@ -683,7 +614,6 @@ def fig_motion_mask_frames(files: dict, save_dir: Path, tag: str,
 # =============================================================================
 # Summary report
 # =============================================================================
-
 def print_summary(dims: dict, vox: dict, epi: dict, tag: str):
     print("\n" + "=" * 60)
     print(f"SUMMARY  —  {tag}")
@@ -713,7 +643,6 @@ def print_summary(dims: dict, vox: dict, epi: dict, tag: str):
 # =============================================================================
 # Main
 # =============================================================================
-
 def main():
     args     = parse_args()
     save_dir = Path(args.save_dir)

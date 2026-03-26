@@ -1,48 +1,4 @@
 #!/usr/bin/env python3
-"""
-backnorm_pipeline.py
-====================
-Nipype pipeline -- three stages:
-
-  Stage 1 -- Back-normalize a binary mask from template space to native BOLD
-             space (3D) using the INVERSE of the combined run-to-template
-             normalization matrix.
-
-  Stage 2 -- Build a motion-aware 4D mask by applying each per-volume MCFlirt
-             affine to the 3D native mask and merging into a 4D volume whose
-             temporal length matches the raw BOLD.
-
-  Stage 3 -- Mask the raw BOLD element-wise with the 4D motion-aware mask.
-
-Subjects  : only 2-month-old subjects (IDs that do NOT end with 'A').
-Task      : videos only.
-Sessions  : ALL sessions found for each subject (auto-discovered from BIDS).
-Runs      : ALL runs found per session that also have a matching norm matrix
-            and MCFlirt mats directory (mismatches are skipped with a warning).
-
-Parallelism
------------
-All per-run workflows are embedded in a single top-level meta-workflow so
-nipype's scheduler sees every node across every subject/session/run at once.
-Independent runs execute concurrently up to --n_procs cores, instead of
-one run at a time as in a sequential for-loop.
-
-Usage (all defaults)::
-
-    python backnorm_pipeline.py
-
-Selective run::
-
-    python backnorm_pipeline.py --subjects IRN78 IRN64 --n_procs 16
-
-Output layout (BIDS-derivative)::
-
-    <output_dir>/sub-{sub}/ses-{ses}/func/
-        sub-{sub}_ses-{ses}_task-videos_run-{run}_space-native_mask.nii.gz
-        sub-{sub}_ses-{ses}_task-videos_run-{run}_space-native_desc-4dmotionmask.nii.gz
-        sub-{sub}_ses-{ses}_task-videos_run-{run}_space-native_desc-maskedbold.nii.gz
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -55,7 +11,6 @@ from nipype.interfaces import fsl
 # =============================================================================
 # Default paths  -- edit here or override via CLI
 # =============================================================================
-
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
@@ -79,7 +34,6 @@ EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
 # =============================================================================
 # CLI
 # =============================================================================
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -107,7 +61,6 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 # Path construction helpers
 # =============================================================================
-
 def bold_path(bids_dir: str, subject: str, session: str, run: str) -> Path:
     """Raw BOLD NIfTI for the videos task."""
     return (
@@ -159,7 +112,6 @@ def output_prefix(subject: str, session: str, run: str) -> str:
 # =============================================================================
 # Discovery  -- subjects, sessions, runs
 # =============================================================================
-
 def find_subjects(bids_dir: str) -> List[str]:
     """
     All 2-month-old subject IDs in the BIDS directory.
@@ -208,7 +160,6 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
 # =============================================================================
 # Path validation  -- runs before any workflow is built
 # =============================================================================
-
 _G = "\033[32m"
 _R = "\033[31m"
 _Y = "\033[33m"
@@ -348,7 +299,6 @@ def check_all_paths(
 # =============================================================================
 # Per-run Nipype workflow
 # =============================================================================
-
 def build_run_workflow(
     subject:         str,
     session:         str,
@@ -530,7 +480,6 @@ def build_run_workflow(
 # =============================================================================
 # Main
 # =============================================================================
-
 def main() -> None:
     args = parse_args()
 
