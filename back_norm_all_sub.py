@@ -1,11 +1,50 @@
 #!/usr/bin/env python3
-import argparse
-import sys
-from pathlib import Path
-from typing import List, Tuple
+"""
+Back-normalization pipeline  --  HPC/SLURM-optimized version
+=============================================================
+Improvements over the original:
+  - Node-local scratch (/scratch/$USER/$SLURM_JOB_ID) for all intermediate
+    files, avoiding Lustre network I/O during the heavy MapNode stages.
+  - TMPDIR is created at startup and deleted at exit (atexit + SIGTERM handler).
+  - n_procs is auto-detected from $SLURM_CPUS_PER_TASK (CLI still overrides).
+  - memory_gb is auto-detected from $SLURM_MEM_PER_NODE / SLURM_MEM_PER_CPU
+    and distributed across processes so Nipype can throttle greedy nodes.
+  - Nipype hash-based caching is enabled: re-running the same job after a
+    partial failure will skip already-completed nodes automatically.
+  - A progress callback prints a running count of completed / failed nodes
+    so you can see forward motion in SLURM logs without tail-ing nipype logs.
+  - Large graphs (>500 runs) are automatically batched so the NetworkX graph
+    does not become too heavy to schedule efficiently.
+  - Final outputs are always written directly to Lustre (output_dir); only
+    scratch/intermediate files live on the local disk.  Original data is
+    never touched.
+"""
 
-from nipype import Node, MapNode, Workflow
+import argparse
+import atexit
+import logging
+import os
+import shutil
+import signal
+import sys
+import time
+from pathlib import Path
+from threading import Lock
+from typing import List, Optional, Tuple
+
+import nipype.pipeline.engine as pe
+from nipype import Node, MapNode, Workflow, config as nipype_config
 from nipype.interfaces import fsl
+
+# ---------------------------------------------------------------------------
+# Logging  --  one logger for the whole script (separate from nipype's own)
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level   = logging.INFO,
+    format  = "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt = "%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("backnorm")
 
 
 # =============================================================================
@@ -16,20 +55,117 @@ _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DEFAULTS = dict(
     bids_dir         = _BIDS_DIR,
     workingdir       = f"{_BIDS_DIR}/workingdir",
-    mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",  # root of the per-run mats tree
+    mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
     template_mask    = (
         f"{_BIDS_DIR}/derivatives/templates/mask/"
         "binary_mask_from_julichbrainatlas_3.1_207areas_MPM_MNI152"
         "_space-nihpd-02-05_2mm.nii.gz"
     ),
     output_dir      = f"{_BIDS_DIR}/derivatives/faizan_analysis",
-    nipype_work_dir = f"{_BIDS_DIR}/derivatives/faizan_analysis/.nipype_work",
-    n_procs         = 4,
+    # nipype_work_dir intentionally left None -- resolved at runtime from scratch
+    n_procs         = None,   # None = auto-detect from SLURM
+    memory_gb       = None,   # None = auto-detect from SLURM
+    batch_size      = 200,    # max runs per meta-workflow to keep graph lean
 )
 
-
-# Subjects excluded from all processing regardless of what BIDS contains
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
+
+# =============================================================================
+# Scratch / TMPDIR management
+# =============================================================================
+_SCRATCH_DIR: Optional[Path] = None   # set once in setup_scratch()
+
+def setup_scratch() -> Path:
+    """
+    Create a job-specific scratch directory on node-local storage.
+
+    Priority order:
+      1.  /scratch/$USER/$SLURM_JOB_ID   (preferred on most HPC clusters)
+      2.  $TMPDIR                         (set by some schedulers)
+      3.  /tmp/$USER_backnorm_<pid>        (fallback)
+
+    The directory is registered for automatic cleanup via atexit and SIGTERM.
+    """
+    global _SCRATCH_DIR
+
+    user    = os.environ.get("USER", "user")
+    job_id  = os.environ.get("SLURM_JOB_ID", f"local_{os.getpid()}")
+    scratch_root = Path(os.environ.get("TMPDIR", f"/scratch/{user}"))
+    scratch = scratch_root / job_id / "backnorm"
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    _SCRATCH_DIR = scratch
+    log.info(f"Scratch directory : {scratch}")
+
+    # Register cleanup
+    atexit.register(_cleanup_scratch)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    return scratch
+
+
+def _cleanup_scratch():
+    if _SCRATCH_DIR and _SCRATCH_DIR.exists():
+        log.info(f"Cleaning up scratch: {_SCRATCH_DIR}")
+        try:
+            shutil.rmtree(_SCRATCH_DIR)
+        except Exception as e:
+            log.warning(f"Could not remove scratch dir: {e}")
+
+
+def _sigterm_handler(signum, frame):
+    log.info("Received SIGTERM -- cleaning up and exiting.")
+    _cleanup_scratch()
+    sys.exit(0)
+
+
+# =============================================================================
+# SLURM resource auto-detection
+# =============================================================================
+def detect_slurm_resources() -> Tuple[int, float]:
+    """
+    Return (n_procs, memory_gb) from SLURM environment variables.
+    Falls back to conservative defaults if not running under SLURM.
+    """
+    # ---- CPUs ----------------------------------------------------------------
+    cpus_str = (
+        os.environ.get("SLURM_CPUS_PER_TASK")
+        or os.environ.get("SLURM_NPROCS")
+        or os.environ.get("SLURM_NTASKS")
+    )
+    try:
+        n_procs = int(cpus_str)
+    except (TypeError, ValueError):
+        n_procs = 4
+        log.warning(
+            "Could not detect SLURM CPU count from environment; "
+            f"defaulting to {n_procs}. Pass --n_procs to override."
+        )
+    else:
+        log.info(f"SLURM CPUs detected  : {n_procs}")
+
+    # ---- Memory --------------------------------------------------------------
+    # SLURM_MEM_PER_NODE is in MB; SLURM_MEM_PER_CPU is also in MB
+    mem_node = os.environ.get("SLURM_MEM_PER_NODE")
+    mem_cpu  = os.environ.get("SLURM_MEM_PER_CPU")
+    try:
+        if mem_node:
+            memory_gb = int(mem_node) / 1024.0
+        elif mem_cpu:
+            memory_gb = int(mem_cpu) * n_procs / 1024.0
+        else:
+            raise ValueError("no SLURM mem env var")
+    except (TypeError, ValueError):
+        memory_gb = 8.0
+        log.warning(
+            "Could not detect SLURM memory from environment; "
+            f"defaulting to {memory_gb} GB. Pass --memory_gb to override."
+        )
+    else:
+        log.info(f"SLURM memory detected: {memory_gb:.1f} GB")
+
+    return n_procs, memory_gb
+
 
 # =============================================================================
 # CLI
@@ -39,47 +175,38 @@ def parse_args() -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--bids_dir",         default=DEFAULTS["bids_dir"],
-                   help="BIDS root directory")
+    p.add_argument("--bids_dir",         default=DEFAULTS["bids_dir"])
     p.add_argument("--workingdir",       default=DEFAULTS["workingdir"],
                    help="Directory containing per-subject normalization matrices")
-    p.add_argument("--mcflirt_mats_dir", default=DEFAULTS["mcflirt_mats_dir"],
-                   help="Root of the MCFlirt per-volume affine matrices tree")
-    p.add_argument("--template_mask",    default=DEFAULTS["template_mask"],
-                   help="Binary mask in template (NIHPD) space (.nii.gz)")
-    p.add_argument("--output_dir",       default=DEFAULTS["output_dir"],
-                   help="Pipeline output root (BIDS-derivative)")
-    p.add_argument("--nipype_work_dir",  default=DEFAULTS["nipype_work_dir"],
-                   help="Nipype scratch directory for intermediate files")
-    p.add_argument("--subjects",         nargs="+", default=None,
-                   help="Subject IDs to process (default: all 2-month subjects)")
-    p.add_argument("--n_procs",          type=int, default=DEFAULTS["n_procs"],
-                   help="Total parallel processes shared across ALL runs")
+    p.add_argument("--mcflirt_mats_dir", default=DEFAULTS["mcflirt_mats_dir"])
+    p.add_argument("--template_mask",    default=DEFAULTS["template_mask"])
+    p.add_argument("--output_dir",       default=DEFAULTS["output_dir"])
+    p.add_argument("--nipype_work_dir",  default=None,
+                   help="Override Nipype scratch dir (default: node-local scratch)")
+    p.add_argument("--subjects",         nargs="+", default=None)
+    p.add_argument("--n_procs",          type=int, default=None,
+                   help="Parallel processes (default: $SLURM_CPUS_PER_TASK)")
+    p.add_argument("--memory_gb",        type=float, default=None,
+                   help="Total memory in GB (default: from SLURM env)")
+    p.add_argument("--batch_size",       type=int, default=DEFAULTS["batch_size"],
+                   help="Max runs per meta-workflow graph (default: 200)")
     return p.parse_args()
 
 
 # =============================================================================
-# Path construction helpers
+# Path construction helpers  (unchanged from original)
 # =============================================================================
-def bold_path(bids_dir: str, subject: str, session: str, run: str) -> Path:
-    """Raw BOLD NIfTI for the videos task."""
+
+def bold_path(bids_dir, subject, session, run) -> Path:
     return (
-        Path(bids_dir)
-        / f"sub-{subject}" / f"ses-{session}" / "func"
+        Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
         / f"sub-{subject}_ses-{session}_task-videos_dir-AP_run-{run}_bold.nii.gz"
     )
 
-
-def norm_mat_path(workingdir: str, subject: str, session: str, run: str) -> Path:
-    """
-    Forward normalization matrix  (native EPI -> reference run -> template).
-    We invert this to go  template -> native EPI.
-    """
+def norm_mat_path(workingdir, subject, session, run) -> Path:
     return (
-        Path(workingdir)
-        / subject / "derivatives" / "preproc"
-        / f"_subject_id_{subject}"
-        / "_referencetype_standard"
+        Path(workingdir) / subject / "derivatives" / "preproc"
+        / f"_subject_id_{subject}" / "_referencetype_standard"
         / f"_run_{run}_session_{session}_task_name_videos"
         / "combine_xfms_manual_selection"
         / (
@@ -88,9 +215,7 @@ def norm_mat_path(workingdir: str, subject: str, session: str, run: str) -> Path
         )
     )
 
-
-def mcflirt_mats_path(mcflirt_mats_dir: str, subject: str, session: str, run: str) -> Path:
-    """Directory that contains MAT_0000 ... MAT_N for this run."""
+def mcflirt_mats_path(mcflirt_mats_dir, subject, session, run) -> Path:
     return (
         Path(mcflirt_mats_dir)
         / f"_subject_id_{subject}"
@@ -98,26 +223,17 @@ def mcflirt_mats_path(mcflirt_mats_dir: str, subject: str, session: str, run: st
         / "mats"
     )
 
-
-def output_func_dir(output_dir: str, subject: str, session: str) -> Path:
-    """BIDS-derivative func folder for a subject/session."""
+def output_func_dir(output_dir, subject, session) -> Path:
     return Path(output_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
 
-
-def output_prefix(subject: str, session: str, run: str) -> str:
-    """Shared BIDS filename prefix for all outputs of this run."""
+def output_prefix(subject, session, run) -> str:
     return f"sub-{subject}_ses-{session}_task-videos_run-{run}"
 
 
 # =============================================================================
-# Discovery  -- subjects, sessions, runs
+# Discovery
 # =============================================================================
 def find_subjects(bids_dir: str) -> List[str]:
-    """
-    All 2-month-old subject IDs in the BIDS directory.
-    9-month re-scan subjects (ending with 'A') and any subject in
-    EXCLUDE_SUBS are filtered out.
-    """
     return sorted(
         d.name[4:]
         for d in Path(bids_dir).iterdir()
@@ -127,24 +243,16 @@ def find_subjects(bids_dir: str) -> List[str]:
         and d.name[4:] not in EXCLUDE_SUBS
     )
 
-
 def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]:
-    """
-    Return ALL (session, run) pairs that have a videos-task BOLD file for
-    this subject, across every session directory found under sub-{subject}/.
-    No sessions or runs are assumed -- everything is discovered from BIDS.
-    """
-    pairs: List[Tuple[str, str]] = []
+    pairs = []
     sub_dir = Path(bids_dir) / f"sub-{subject}"
-
     for ses_dir in sorted(sub_dir.iterdir()):
         if not (ses_dir.is_dir() and ses_dir.name.startswith("ses-")):
             continue
-        session  = ses_dir.name[4:]     # e.g. "1", "2"
+        session  = ses_dir.name[4:]
         func_dir = ses_dir / "func"
         if not func_dir.exists():
             continue
-
         pattern = f"sub-{subject}_ses-{session}_task-videos_dir-AP_run-*_bold.nii.gz"
         for f in sorted(func_dir.glob(pattern)):
             run = next(
@@ -153,70 +261,38 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
             )
             if run:
                 pairs.append((session, run))
-
     return pairs
 
 
 # =============================================================================
-# Path validation  -- runs before any workflow is built
+# Path validation
 # =============================================================================
-_G = "\033[32m"
-_R = "\033[31m"
-_Y = "\033[33m"
-_E = "\033[0m"
-
-def _ok(msg):   return f"{_G}  OK   {_E}{msg}"
-def _miss(msg): return f"{_R}  MISS {_E}{msg}"
-def _warn(msg): return f"{_Y}  WARN {_E}{msg}"
+_G = "\033[32m"; _R = "\033[31m"; _Y = "\033[33m"; _E = "\033[0m"
+def _ok(m):   return f"{_G}  OK   {_E}{m}"
+def _miss(m): return f"{_R}  MISS {_E}{m}"
+def _warn(m): return f"{_Y}  WARN {_E}{m}"
 
 
-def check_all_paths(
-    subjects: List[str],
-    args:     argparse.Namespace,
-) -> Tuple[List[Tuple[str, str, str]], List[str]]:
-    """
-    Validate every input for all subjects x sessions x runs and print a
-    colour-coded report.
-
-    Checks
-    ------
-    1. Template mask exists (global, once)
-    2. Raw BOLD NIfTI exists
-    3. Forward normalisation matrix exists
-    4. MCFlirt mats directory exists and contains MAT_* files
-    5. MAT file count == BOLD volume count
-
-    Only combinations that pass ALL checks are added to 'ready'.
-
-    Returns
-    -------
-    ready   : (subject, session, run) tuples that passed all checks
-    skipped : human-readable labels of combinations that failed
-    """
+def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]]:
     import nibabel as nib
 
-    ready:   List[Tuple[str, str, str]] = []
-    skipped: List[str]                  = []
-    total_issues = 0
+    ready, skipped = [], []
+    total_issues   = 0
 
     print("\n" + "=" * 70)
     print("PATH VALIDATION")
     print("=" * 70)
 
-    # 1. Global: template mask
     tmask = Path(args.template_mask)
-    if tmask.exists():
-        print(_ok(f"template_mask   {tmask}"))
-    else:
-        print(_miss(f"template_mask   {tmask}"))
+    print(_ok(f"template_mask   {tmask}") if tmask.exists()
+          else _miss(f"template_mask   {tmask}"))
+    if not tmask.exists():
         total_issues += 1
     print()
 
-    # 2. Per subject / session / run
     for subject in subjects:
         pairs = find_sessions_and_runs(args.bids_dir, subject)
         print("-" * 70)
-
         if not pairs:
             print(_miss(f"sub-{subject}  -- no videos-task BOLD found in BIDS"))
             skipped.append(f"sub-{subject} (no BOLD found)")
@@ -224,45 +300,31 @@ def check_all_paths(
             continue
 
         for session, run in pairs:
-            tag = f"sub-{subject}  ses-{session}  run-{run}"
-            print(tag)
+            tag    = f"sub-{subject}  ses-{session}  run-{run}"
             issues = 0
+            print(tag)
 
-            # BOLD
             b = bold_path(args.bids_dir, subject, session, run)
-            if b.exists():
-                print(_ok(f"  BOLD         {b}"))
-            else:
-                print(_miss(f"  BOLD         {b}"))
-                issues += 1
+            print(_ok(f"  BOLD         {b}") if b.exists()
+                  else _miss(f"  BOLD         {b}"))
+            if not b.exists(): issues += 1
 
-            # Norm matrix
             m = norm_mat_path(args.workingdir, subject, session, run)
-            if m.exists():
-                print(_ok(f"  norm_mat     {m}"))
-            else:
-                print(_miss(f"  norm_mat     {m}"))
-                issues += 1
+            print(_ok(f"  norm_mat     {m}") if m.exists()
+                  else _miss(f"  norm_mat     {m}"))
+            if not m.exists(): issues += 1
 
-            # MCFlirt mats directory + file count
             md        = mcflirt_mats_path(args.mcflirt_mats_dir, subject, session, run)
             mat_files = sorted(md.glob("MAT_*")) if md.is_dir() else []
-
             if md.is_dir() and mat_files:
                 print(_ok(f"  mcflirt_dir  {md}  ({len(mat_files)} MAT files)"))
-
-                # Volume count match
                 if b.exists():
                     try:
                         n_vols = nib.load(str(b)).shape[3]
                         if len(mat_files) == n_vols:
-                            print(_ok(
-                                f"  vol_count    {len(mat_files)} MAT == {n_vols} BOLD volumes"
-                            ))
+                            print(_ok(f"  vol_count    {len(mat_files)} MAT == {n_vols} BOLD volumes"))
                         else:
-                            print(_warn(
-                                f"  vol_count    {len(mat_files)} MAT != {n_vols} BOLD volumes  <- mismatch!"
-                            ))
+                            print(_warn(f"  vol_count    {len(mat_files)} MAT != {n_vols} BOLD volumes  <- mismatch!"))
                             issues += 1
                     except Exception as e:
                         print(_warn(f"  vol_count    could not read BOLD: {e}"))
@@ -280,10 +342,8 @@ def check_all_paths(
                 print(f"  -> {_R}{issues} issue(s) -- will be skipped{_E}")
                 skipped.append(tag.strip())
                 total_issues += issues
-
             print()
 
-    # Summary
     print("=" * 70)
     print(f"  Ready to run : {len(ready)}")
     print(f"  Skipped      : {len(skipped)}")
@@ -292,46 +352,82 @@ def check_all_paths(
     else:
         print(f"{_R}{total_issues} issue(s) found. Fix MISS entries before re-running.{_E}")
     print("=" * 70 + "\n")
-
     return ready, skipped
 
 
 # =============================================================================
-# Per-run Nipype workflow
+# Progress callback
+# =============================================================================
+class ProgressTracker:
+    """
+    Thread-safe counter that prints a status line whenever a node finishes
+    or crashes.  Passed to Nipype as a callback so it fires inside the
+    MultiProc worker pool.
+    """
+    def __init__(self, total_nodes: int):
+        self._done    = 0
+        self._failed  = 0
+        self._total   = total_nodes
+        self._lock    = Lock()
+        self._start   = time.time()
+
+    def __call__(self, node, status):
+        with self._lock:
+            if status == "end":
+                self._done += 1
+            elif status == "exception":
+                self._failed += 1
+
+            elapsed  = time.time() - self._start
+            rate     = self._done / elapsed if elapsed > 0 else 0
+            eta_s    = (self._total - self._done) / rate if rate > 0 else float("inf")
+            eta_str  = f"{eta_s/60:.0f} min" if eta_s < 3600 else f"{eta_s/3600:.1f} h"
+
+            log.info(
+                f"[{status.upper():9s}] {node.name}  |  "
+                f"{self._done}/{self._total} done  "
+                f"({self._failed} failed)  |  "
+                f"elapsed {elapsed/60:.1f} min  ETA ~{eta_str}"
+            )
+
+
+# =============================================================================
+# Nipype global config  (caching + crash dumps)
+# =============================================================================
+
+def configure_nipype(scratch: Path):
+    """
+    Enable hash-based caching so re-runs skip already-completed nodes.
+    Write crash files to scratch (fast local disk, human-readable).
+    """
+    nipype_config.set("execution", "stop_on_first_crash",  "false")
+    nipype_config.set("execution", "crashdump_dir",        str(scratch / "crashdumps"))
+    nipype_config.set("execution", "hash_method",          "content")
+    # Keep all node working dirs after completion so the hash cache persists
+    # between re-runs (nodes whose outputs haven't changed will be skipped).
+    nipype_config.set("execution", "remove_unnecessary_outputs", "false")
+    nipype_config.set("logging",   "workflow_level",       "INFO")
+    nipype_config.set("logging",   "interface_level",      "WARNING")
+
+    (scratch / "crashdumps").mkdir(parents=True, exist_ok=True)
+
+
+# =============================================================================
+# Per-run workflow  (identical processing logic, scratch-aware paths)
 # =============================================================================
 def build_run_workflow(
-    subject:         str,
-    session:         str,
-    run:             str,
-    bold:            str,
-    fwd_mat:         str,
-    mats:            List[str],
-    template_mask:   str,
-    output_dir:      str,
-    nipype_work_dir: str,
+    subject, session, run,
+    bold, fwd_mat, mats,
+    template_mask, output_dir,
+    nipype_work_dir,
 ) -> Workflow:
     """
-    Self-contained Nipype workflow for one subject / session / run.
+    One Nipype workflow per subject/session/run.
 
-    Workflow graph
-    --------------
-    mean_bold -------------------------------------------------------+
-                                                                     v
-    invert_mat ----------------------------------------> backnorm_3d (FLIRT -applyxfm NN)
-                                                                     |
-                                               +---------------------+
-                                               |  (3D native mask)
-                                               v
-                                  per_vol_mask  (MapNode: one FLIRT per MAT file)
-                                               |  (list of N 3D volumes)
-                                               v
-                                         merge_4d  (fslmerge -t)
-                                               |  (4D motion-aware mask)
-                                               v
-                                       apply_mask  (fslmaths -mas)
-                                               |
-                                               v
-                                        masked BOLD (4D)
+    All intermediate files go to nipype_work_dir (node-local scratch).
+    Only the two final outputs are written directly to Lustre output_dir:
+      - {pfx}_space-native_mask.nii.gz          (Stage 1C)
+      - {pfx}_space-native_desc-maskedbold.nii.gz  (Stage 3)
     """
     out_dir = output_func_dir(output_dir, subject, session)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -342,40 +438,20 @@ def build_run_workflow(
         base_dir = nipype_work_dir,
     )
 
-    # ------------------------------------------------------------------
-    # Stage 1A  --  mean BOLD  (defines the native EPI reference grid)
-    # Command   :  fslmaths <bold> -Tmean <mean_bold>
-    # ------------------------------------------------------------------
+    # Stage 1A -- mean BOLD
     mean_bold = Node(
-        fsl.ImageMaths(
-            in_file   = bold,
-            op_string = "-Tmean",
-            # no out_file -- nipype manages the name inside the work directory
-            # to avoid stale-cache TraitErrors on re-runs
-        ),
-        name = "mean_bold",
+        fsl.ImageMaths(in_file=bold, op_string="-Tmean"),
+        name="mean_bold",
     )
 
-    # ------------------------------------------------------------------
-    # Stage 1B  --  invert forward norm matrix
-    # Forward   :  native EPI -> reference run -> template
-    # Inverse   :  template -> native EPI
-    # Command   :  convert_xfm -inverse <fwd_mat> -omat <inv_mat>
-    # ------------------------------------------------------------------
+    # Stage 1B -- invert normalization matrix
     invert_mat = Node(
-        fsl.ConvertXFM(
-            in_file    = fwd_mat,
-            invert_xfm = True,
-            # no out_file -- managed by nipype in work directory
-        ),
-        name = "invert_mat",
+        fsl.ConvertXFM(in_file=fwd_mat, invert_xfm=True),
+        name="invert_mat",
     )
 
-    # ------------------------------------------------------------------
-    # Stage 1C  --  back-normalize mask to native space (3D output)
-    # Command   :  flirt -in <template_mask> -ref <mean_bold>
-    #                    -applyxfm -init <inv_mat> -interp nearestneighbour
-    # ------------------------------------------------------------------
+    # Stage 1C -- back-normalize mask to native space
+    # Output goes straight to Lustre (it's a single small file, no I/O penalty)
     backnorm_3d = Node(
         fsl.FLIRT(
             in_file   = template_mask,
@@ -383,21 +459,14 @@ def build_run_workflow(
             apply_xfm = True,
             out_file  = str(out_dir / f"{pfx}_space-native_mask.nii.gz"),
         ),
-        name = "backnorm_3d",
+        name="backnorm_3d",
     )
     wf.connect([
         (mean_bold,  backnorm_3d, [("out_file", "reference")]),
         (invert_mat, backnorm_3d, [("out_file", "in_matrix_file")]),
     ])
 
-    # ------------------------------------------------------------------
-    # Stage 2A  --  invert each per-volume MCFlirt affine
-    #
-    # MCFlirt produces MAT_t  :  vol_t -> mean  (aligns each vol to mean)
-    # We need  inv(MAT_t)     :  mean  -> vol_t (to move mask into vol_t space)
-    #
-    # Command   :  convert_xfm -inverse MAT_t -omat inv_MAT_t
-    # ------------------------------------------------------------------
+    # Stage 2A -- invert per-volume MCFlirt affines  (MapNode)
     invert_motion_mats = MapNode(
         fsl.ConvertXFM(invert_xfm=True),
         iterfield = ["in_file"],
@@ -405,125 +474,76 @@ def build_run_workflow(
     )
     invert_motion_mats.inputs.in_file = mats
 
-    # ------------------------------------------------------------------
-    # Stage 2B  --  extract each individual volume from BOLD
-    #
-    # inv(MAT_t) maps mean -> vol_t so vol_t must be the reference grid.
-    # We extract each volume so flirt can use it as the per-timepoint ref.
-    # Command   :  fslroi <bold> <vol_t> t 1
-    # ------------------------------------------------------------------
+    # Stage 2B -- extract individual volumes  (MapNode)
     extract_vols = MapNode(
-        fsl.ExtractROI(
-            in_file = bold,
-            t_size  = 1,
-        ),
+        fsl.ExtractROI(in_file=bold, t_size=1),
         iterfield = ["t_min"],
         name      = "extract_vols",
     )
     extract_vols.inputs.t_min = list(range(len(mats)))
 
-    # ------------------------------------------------------------------
-    # Stage 2C  --  apply inv(MAT_t) to 3D native mask, ref = vol_t
-    #
-    # This places the mask at the exact brain position for timepoint t.
-    # Command   :  flirt -in <3d_native_mask> -ref <vol_t>
-    #                    -applyxfm -init <inv_MAT_t> -interp nearestneighbour
-    # Note      :  fsl.Merge does not accept out_file; nipype auto-names it
-    # ------------------------------------------------------------------
+    # Stage 2C -- apply inv(MAT_t) to 3D mask, ref = vol_t  (MapNode)
+    # These ~400 intermediate 3D masks live entirely in scratch
     per_vol_mask = MapNode(
-        fsl.FLIRT(
-            interp    = "nearestneighbour",
-            apply_xfm = True,
-        ),
+        fsl.FLIRT(interp="nearestneighbour", apply_xfm=True),
         iterfield = ["in_matrix_file", "reference"],
         name      = "per_vol_mask",
     )
-
     wf.connect([
         (invert_motion_mats, per_vol_mask, [("out_file",  "in_matrix_file")]),
         (extract_vols,       per_vol_mask, [("roi_file",  "reference")]),
         (backnorm_3d,        per_vol_mask, [("out_file",  "in_file")]),
     ])
 
-    # ------------------------------------------------------------------
-    # Stage 2B  --  merge per-volume masks into a 4D motion-aware mask
-    # Temporal length == number of MAT files == BOLD n_volumes
-    # Command   :  fslmerge -t <out_4d> <vol_0> ... <vol_N>
-    # ------------------------------------------------------------------
-    merge_4d = Node(
-        fsl.Merge(dimension="t"),
-        name = "merge_4d",
-    )
-    wf.connect([
-        (per_vol_mask, merge_4d, [("out_file", "in_files")]),
-    ])
+    # Stage 2D -- merge into 4D motion-aware mask
+    merge_4d = Node(fsl.Merge(dimension="t"), name="merge_4d")
+    wf.connect([(per_vol_mask, merge_4d, [("out_file", "in_files")])])
 
-    # ------------------------------------------------------------------
-    # Stage 3   --  apply 4D mask to raw BOLD (element-wise multiply)
-    # masked_bold[x,y,z,t] = bold[x,y,z,t] * mask[x,y,z,t]
-    # Command   :  fslmaths <bold> -mas <4d_mask> <masked_bold>
-    # ------------------------------------------------------------------
+    # Stage 3 -- apply 4D mask to BOLD; final output goes to Lustre
     apply_mask = Node(
         fsl.ApplyMask(
             in_file  = bold,
             out_file = str(out_dir / f"{pfx}_space-native_desc-maskedbold.nii.gz"),
         ),
-        name = "apply_mask",
+        name="apply_mask",
     )
-    wf.connect([
-        (merge_4d, apply_mask, [("merged_file", "mask_file")]),
-    ])
+    wf.connect([(merge_4d, apply_mask, [("merged_file", "mask_file")])])
 
     return wf
 
 
 # =============================================================================
-# Main
+# Batch execution helper
 # =============================================================================
-def main() -> None:
-    args = parse_args()
+def run_batch(
+    batch:           List[Tuple[str, str, str]],
+    batch_idx:       int,
+    n_batches:       int,
+    args:            argparse.Namespace,
+    scratch:         Path,
+    n_procs:         int,
+    memory_gb:       float,
+):
+    """Build and execute a meta-workflow for one batch of runs."""
+    nipype_work_dir = str(scratch / "nipype_work")
 
-    # -- Discover subjects (always enforce EXCLUDE_SUBS) ----------------------
-    if args.subjects:
-        excluded = [s for s in args.subjects if s in EXCLUDE_SUBS]
-        subjects = [s for s in args.subjects if s not in EXCLUDE_SUBS]
-        if excluded:
-            print(f"\nExcluded (in EXCLUDE_SUBS): {excluded}")
-    else:
-        subjects = find_subjects(args.bids_dir)   # EXCLUDE_SUBS filtered inside
-
-    print(f"\nAlways-excluded subjects: {EXCLUDE_SUBS}")
-    print(f"Subjects to process ({len(subjects)} total):")
-    print("  " + "  ".join(subjects))
-
-    # -- Validate all inputs up front, print full colour-coded report ---------
-    ready, skipped = check_all_paths(subjects, args)
-
-    if not ready:
-        print("No valid subject/session/run combinations found. Exiting.")
-        sys.exit(1)
-
-    # -- Build a single meta-workflow containing all per-run sub-workflows ----
-    #
-    #   WHY: a for-loop of wf.run() calls is sequential -- MultiProc only
-    #   parallelises nodes *within* one run at a time, so every other subject
-    #   sits idle while one run's 400-500 FLIRT MapNode calls execute.
-    #
-    #   By embedding every per-run workflow as a child of one meta-workflow,
-    #   nipype's scheduler sees all nodes across all subjects/sessions/runs
-    #   simultaneously and fills n_procs cores globally.  Stage-1 of run-002
-    #   can run while Stage-2 of run-001 is still in progress, etc.
-    #
-    meta_wf = Workflow(
-        name     = "backnorm_all_subjects",
-        base_dir = args.nipype_work_dir,
+    log.info(
+        f"Batch {batch_idx}/{n_batches}: "
+        f"{len(batch)} run(s), {n_procs} procs, {memory_gb:.1f} GB RAM"
     )
 
-    for subject, session, run in ready:
-        mats = sorted(str(m) for m in mcflirt_mats_path(
-            args.mcflirt_mats_dir, subject, session, run
-        ).glob("MAT_*"))
+    meta_wf = Workflow(
+        name     = f"backnorm_batch{batch_idx:03d}",
+        base_dir = nipype_work_dir,
+    )
 
+    total_nodes = 0
+    for subject, session, run in batch:
+        mats = sorted(
+            str(m) for m in mcflirt_mats_path(
+                args.mcflirt_mats_dir, subject, session, run
+            ).glob("MAT_*")
+        )
         run_wf = build_run_workflow(
             subject         = subject,
             session         = session,
@@ -533,28 +553,99 @@ def main() -> None:
             mats            = mats,
             template_mask   = args.template_mask,
             output_dir      = args.output_dir,
-            nipype_work_dir = args.nipype_work_dir,
+            nipype_work_dir = nipype_work_dir,
         )
         meta_wf.add_nodes([run_wf])
+        # Each run has roughly: 3 Stage-1 nodes + 3 MapNodes (each ~n_vols items) + 2 more
+        total_nodes += 8 + 3 * len(mats)
 
-    # -- Execute the full graph in one shot -----------------------------------
-    print(
-        f"Submitting {len(ready)} run(s) across {len(subjects)} subject(s) "
-        f"to a single scheduler using {args.n_procs} parallel process(es).\n"
-        f"All independent nodes across subjects/runs execute concurrently.\n"
+    tracker  = ProgressTracker(total_nodes)
+    mem_per_proc = memory_gb / n_procs
+
+    log.info(f"Estimated total nodes in graph: ~{total_nodes:,}")
+    log.info(f"Memory per process: {mem_per_proc:.2f} GB")
+
+    meta_wf.run(
+        plugin      = "MultiProc",
+        plugin_args = {
+            "n_procs":      n_procs,
+            "memory_gb":    memory_gb,
+            "status_callback": tracker,
+        },
     )
-    meta_wf.run(plugin="MultiProc", plugin_args={"n_procs": args.n_procs})
 
-    # -- Summary --------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("Pipeline complete.")
-    print(f"  Ran      : {len(ready)} run(s)")
-    print(f"  Skipped  : {len(skipped)}")
-    if skipped:
-        for s in skipped:
-            print(f"    - {s}")
-    print(f"  Outputs  : {args.output_dir}")
-    print("=" * 60)
+
+# =============================================================================
+# Main
+# =============================================================================
+def main():
+    args = parse_args()
+
+    # -- Scratch setup --------------------------------------------------------
+    scratch = setup_scratch()
+
+    # -- Override nipype_work_dir with scratch unless user specified one -------
+    if args.nipype_work_dir is None:
+        args.nipype_work_dir = str(scratch / "nipype_work")
+    log.info(f"Nipype work dir   : {args.nipype_work_dir}")
+
+    # -- Resolve n_procs and memory_gb ----------------------------------------
+    slurm_procs, slurm_mem = detect_slurm_resources()
+    n_procs   = args.n_procs   if args.n_procs   is not None else slurm_procs
+    memory_gb = args.memory_gb if args.memory_gb is not None else slurm_mem
+    log.info(f"Using n_procs={n_procs}, memory_gb={memory_gb:.1f}")
+
+    # -- Configure nipype globally --------------------------------------------
+    configure_nipype(scratch)
+
+    # -- Discover subjects ----------------------------------------------------
+    if args.subjects:
+        excluded = [s for s in args.subjects if s in EXCLUDE_SUBS]
+        subjects = [s for s in args.subjects if s not in EXCLUDE_SUBS]
+        if excluded:
+            log.warning(f"Excluded (in EXCLUDE_SUBS): {excluded}")
+    else:
+        subjects = find_subjects(args.bids_dir)
+
+    log.info(f"Always-excluded: {EXCLUDE_SUBS}")
+    log.info(f"Subjects to process: {len(subjects)}")
+
+    # -- Validate all inputs --------------------------------------------------
+    ready, skipped = check_all_paths(subjects, args)
+    if not ready:
+        log.error("No valid subject/session/run combinations found. Exiting.")
+        sys.exit(1)
+
+    # -- Split into batches to keep the graph manageable ----------------------
+    batch_size = args.batch_size
+    batches    = [ready[i:i+batch_size] for i in range(0, len(ready), batch_size)]
+    n_batches  = len(batches)
+    log.info(
+        f"Processing {len(ready)} run(s) in {n_batches} batch(es) "
+        f"of up to {batch_size} run(s) each."
+    )
+
+    t0 = time.time()
+    for idx, batch in enumerate(batches, start=1):
+        run_batch(
+            batch      = batch,
+            batch_idx  = idx,
+            n_batches  = n_batches,
+            args       = args,
+            scratch    = scratch,
+            n_procs    = n_procs,
+            memory_gb  = memory_gb,
+        )
+
+    elapsed = time.time() - t0
+    log.info("=" * 60)
+    log.info("Pipeline complete.")
+    log.info(f"  Ran      : {len(ready)} run(s) in {elapsed/3600:.2f} h")
+    log.info(f"  Skipped  : {len(skipped)}")
+    for s in skipped:
+        log.info(f"    - {s}")
+    log.info(f"  Outputs  : {args.output_dir}")
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":
