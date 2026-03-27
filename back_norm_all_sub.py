@@ -21,6 +21,7 @@ Improvements over the original:
 """
 
 import argparse
+import re
 import atexit
 import logging
 import os
@@ -29,12 +30,13 @@ import signal
 import sys
 import time
 from pathlib import Path
-from threading import Lock
+
 from typing import List, Optional, Tuple
 
 import nipype.pipeline.engine as pe
 from nipype import Node, MapNode, Workflow, config as nipype_config
 from nipype.interfaces import fsl
+from nipype.interfaces.io import DataSink
 
 # ---------------------------------------------------------------------------
 # Logging  --  one logger for the whole script (separate from nipype's own)
@@ -366,35 +368,37 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
 
 class ProgressTracker:
     """
-    Thread-safe counter that prints a status line whenever a node finishes
-    or crashes.  Passed to Nipype as a callback so it fires inside the
-    MultiProc worker pool.
+    Progress callback for Nipype's MultiProc plugin.
+
+    NOTE: Nipype deepcopies nodes (and anything reachable from plugin_args)
+    before sending them to worker processes.  threading.Lock is not picklable
+    and will cause a TypeError crash.  This class deliberately avoids any
+    threading primitives so it can be safely deepcopied/pickled.
+    Minor counter inaccuracy under heavy parallelism is acceptable for logging.
     """
     def __init__(self, total_nodes: int):
-        self._done    = 0
-        self._failed  = 0
-        self._total   = total_nodes
-        self._lock    = Lock()
-        self._start   = time.time()
+        self._done   = 0
+        self._failed = 0
+        self._total  = total_nodes
+        self._start  = time.time()
 
     def __call__(self, node, status):
-        with self._lock:
-            if status == "end":
-                self._done += 1
-            elif status == "exception":
-                self._failed += 1
+        if status == "end":
+            self._done += 1
+        elif status == "exception":
+            self._failed += 1
 
-            elapsed  = time.time() - self._start
-            rate     = self._done / elapsed if elapsed > 0 else 0
-            eta_s    = (self._total - self._done) / rate if rate > 0 else float("inf")
-            eta_str  = f"{eta_s/60:.0f} min" if eta_s < 3600 else f"{eta_s/3600:.1f} h"
+        elapsed = time.time() - self._start
+        rate    = self._done / elapsed if elapsed > 0 else 0
+        eta_s   = (self._total - self._done) / rate if rate > 0 else float("inf")
+        eta_str = f"{eta_s/60:.0f} min" if eta_s < 3600 else f"{eta_s/3600:.1f} h"
 
-            log.info(
-                f"[{status.upper():9s}] {node.name}  |  "
-                f"{self._done}/{self._total} done  "
-                f"({self._failed} failed)  |  "
-                f"elapsed {elapsed/60:.1f} min  ETA ~{eta_str}"
-            )
+        log.info(
+            f"[{status.upper():9s}] {node.name}  |  "
+            f"{self._done}/{self._total} done  "
+            f"({self._failed} failed)  |  "
+            f"elapsed {elapsed/60:.1f} min  ETA ~{eta_str}"
+        )
 
 
 # =============================================================================
@@ -444,8 +448,6 @@ def build_run_workflow(
     on a different filesystem cause silent failures where the file lands
     in the scratch work dir and is then deleted at job end.
     """
-    import re
-    from nipype.interfaces.io import DataSink
 
     out_dir = output_func_dir(output_dir, subject, session)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -541,35 +543,69 @@ def build_run_workflow(
     wf.connect([(merge_4d, apply_mask, [("merged_file", "mask_file")])])
 
     # ------------------------------------------------------------------
-    # Stage 4 -- DataSink: copy the three outputs from scratch to Lustre
+    # Stage 4 -- Rename nodes + DataSink
     #
-    # DataSink writes files to:
-    #   base_directory / container / @field_name / filename
+    # FSL and Nipype auto-generate filenames from their inputs, producing
+    # long unpredictable names.  We insert a lightweight Function node
+    # that copies each output to an explicit BIDS filename before handing
+    # it to DataSink.  DataSink then just moves the already-named file
+    # into the correct subdirectory -- no substitution magic needed.
     #
-    # We use substitutions to strip the nipype-generated subfolder name
-    # from the path so files land flat in out_dir with clean BIDS names.
+    # Output layout under func/:
+    #   mask_native/   {pfx}_space-native_mask.nii.gz
+    #   mask_4d/       {pfx}_space-native_desc-mask4d.nii.gz
+    #   masked_bold/   {pfx}_space-native_desc-maskedbold.nii.gz
     # ------------------------------------------------------------------
-    datasink = Node(DataSink(), name="datasink")
-    datasink.inputs.base_directory = str(out_dir)
-    datasink.inputs.container      = ""   # write directly into out_dir
+    from nipype.interfaces.utility import Function
 
-    # Substitutions: nipype adds an intermediate folder named after the
-    # output field (e.g. "@mask3d/") -- strip those away and rename files
-    datasink.inputs.substitutions = [
-        # strip nipype field-name subfolders
-        ("@mask3d/",   ""),
-        ("@mask4d/",   ""),
-        ("@masked/",   ""),
-        # rename to BIDS filenames
-        ("flirt.nii.gz",     f"{pfx}_space-native_mask.nii.gz"),
-        ("merged.nii.gz",    f"{pfx}_space-native_desc-mask4d.nii.gz"),
-        ("applymask.nii.gz", f"{pfx}_space-native_desc-maskedbold.nii.gz"),
-    ]
+    def _rename(in_file: str, out_name: str) -> str:
+        """Copy in_file to a sibling path with out_name as filename."""
+        import shutil, os
+        out_path = os.path.join(os.path.dirname(in_file), out_name)
+        shutil.copy(in_file, out_path)
+        return out_path
+
+    rename_mask3d = Node(
+        Function(input_names=["in_file", "out_name"],
+                 output_names=["out_file"],
+                 function=_rename),
+        name="rename_mask3d",
+    )
+    rename_mask3d.inputs.out_name = f"{pfx}_space-native_mask.nii.gz"
+
+    rename_mask4d = Node(
+        Function(input_names=["in_file", "out_name"],
+                 output_names=["out_file"],
+                 function=_rename),
+        name="rename_mask4d",
+    )
+    rename_mask4d.inputs.out_name = f"{pfx}_space-native_desc-mask4d.nii.gz"
+
+    rename_bold = Node(
+        Function(input_names=["in_file", "out_name"],
+                 output_names=["out_file"],
+                 function=_rename),
+        name="rename_bold",
+    )
+    rename_bold.inputs.out_name = f"{pfx}_space-native_desc-maskedbold.nii.gz"
 
     wf.connect([
-        (backnorm_3d, datasink, [("out_file",     "@mask3d")]),
-        (merge_4d,    datasink, [("merged_file",  "@mask4d")]),
-        (apply_mask,  datasink, [("out_file",      "@masked")]),
+        (backnorm_3d, rename_mask3d, [("out_file",    "in_file")]),
+        (merge_4d,    rename_mask4d, [("merged_file", "in_file")]),
+        (apply_mask,  rename_bold,   [("out_file",    "in_file")]),
+    ])
+
+    # DataSink: dot notation "subdir.@tag" routes file into subdir/
+    # No substitutions needed -- files are already correctly named.
+    datasink = Node(DataSink(), name="datasink")
+    datasink.inputs.base_directory = str(out_dir)
+    datasink.inputs.container      = ""
+    datasink.inputs.substitutions  = []   # no renaming needed
+
+    wf.connect([
+        (rename_mask3d, datasink, [("out_file", "mask_native.@out")]),
+        (rename_mask4d, datasink, [("out_file", "mask_4d.@out")]),
+        (rename_bold,   datasink, [("out_file", "masked_bold.@out")]),
     ])
 
     return wf
