@@ -70,9 +70,11 @@ DEFAULTS = dict(
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
 
+
 # =============================================================================
 # Scratch / TMPDIR management
 # =============================================================================
+
 _SCRATCH_DIR: Optional[Path] = None   # set once in setup_scratch()
 
 def setup_scratch() -> Path:
@@ -122,6 +124,7 @@ def _sigterm_handler(signum, frame):
 # =============================================================================
 # SLURM resource auto-detection
 # =============================================================================
+
 def detect_slurm_resources() -> Tuple[int, float]:
     """
     Return (n_procs, memory_gb) from SLURM environment variables.
@@ -170,6 +173,7 @@ def detect_slurm_resources() -> Tuple[int, float]:
 # =============================================================================
 # CLI
 # =============================================================================
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -233,6 +237,7 @@ def output_prefix(subject, session, run) -> str:
 # =============================================================================
 # Discovery
 # =============================================================================
+
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -358,6 +363,7 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
 # =============================================================================
 # Progress callback
 # =============================================================================
+
 class ProgressTracker:
     """
     Thread-safe counter that prints a status line whenever a node finishes
@@ -415,6 +421,7 @@ def configure_nipype(scratch: Path):
 # =============================================================================
 # Per-run workflow  (identical processing logic, scratch-aware paths)
 # =============================================================================
+
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
@@ -424,11 +431,22 @@ def build_run_workflow(
     """
     One Nipype workflow per subject/session/run.
 
-    All intermediate files go to nipype_work_dir (node-local scratch).
-    Only the two final outputs are written directly to Lustre output_dir:
-      - {pfx}_space-native_mask.nii.gz          (Stage 1C)
-      - {pfx}_space-native_desc-maskedbold.nii.gz  (Stage 3)
+    All processing nodes run entirely in nipype_work_dir (node-local scratch).
+    A DataSink node at the end explicitly copies the three final outputs to
+    Lustre output_dir with correct BIDS filenames:
+      - {pfx}_space-native_mask.nii.gz              (3D back-normalised mask)
+      - {pfx}_space-native_desc-mask4d.nii.gz       (4D motion-aware mask)
+      - {pfx}_space-native_desc-maskedbold.nii.gz   (final masked BOLD)
+
+    Using DataSink (rather than hardcoded out_file paths) is the correct
+    Nipype pattern when the work directory and output directory are on
+    different filesystems (scratch vs Lustre).  Hardcoded out_file paths
+    on a different filesystem cause silent failures where the file lands
+    in the scratch work dir and is then deleted at job end.
     """
+    import re
+    from nipype.interfaces.io import DataSink
+
     out_dir = output_func_dir(output_dir, subject, session)
     out_dir.mkdir(parents=True, exist_ok=True)
     pfx = output_prefix(subject, session, run)
@@ -438,26 +456,31 @@ def build_run_workflow(
         base_dir = nipype_work_dir,
     )
 
-    # Stage 1A -- mean BOLD
+    # ------------------------------------------------------------------
+    # Stage 1A -- mean BOLD  (native EPI reference grid)
+    # ------------------------------------------------------------------
     mean_bold = Node(
         fsl.ImageMaths(in_file=bold, op_string="-Tmean"),
         name="mean_bold",
     )
 
-    # Stage 1B -- invert normalization matrix
+    # ------------------------------------------------------------------
+    # Stage 1B -- invert normalization matrix  (template -> native EPI)
+    # ------------------------------------------------------------------
     invert_mat = Node(
         fsl.ConvertXFM(in_file=fwd_mat, invert_xfm=True),
         name="invert_mat",
     )
 
-    # Stage 1C -- back-normalize mask to native space
-    # Output goes straight to Lustre (it's a single small file, no I/O penalty)
+    # ------------------------------------------------------------------
+    # Stage 1C -- back-normalize mask to native space (3D)
+    # No out_file here -- DataSink handles the final copy to Lustre
+    # ------------------------------------------------------------------
     backnorm_3d = Node(
         fsl.FLIRT(
             in_file   = template_mask,
             interp    = "nearestneighbour",
             apply_xfm = True,
-            out_file  = str(out_dir / f"{pfx}_space-native_mask.nii.gz"),
         ),
         name="backnorm_3d",
     )
@@ -466,7 +489,9 @@ def build_run_workflow(
         (invert_mat, backnorm_3d, [("out_file", "in_matrix_file")]),
     ])
 
-    # Stage 2A -- invert per-volume MCFlirt affines  (MapNode)
+    # ------------------------------------------------------------------
+    # Stage 2A -- invert each per-volume MCFlirt affine  (MapNode)
+    # ------------------------------------------------------------------
     invert_motion_mats = MapNode(
         fsl.ConvertXFM(invert_xfm=True),
         iterfield = ["in_file"],
@@ -474,7 +499,9 @@ def build_run_workflow(
     )
     invert_motion_mats.inputs.in_file = mats
 
-    # Stage 2B -- extract individual volumes  (MapNode)
+    # ------------------------------------------------------------------
+    # Stage 2B -- extract individual volumes from BOLD  (MapNode)
+    # ------------------------------------------------------------------
     extract_vols = MapNode(
         fsl.ExtractROI(in_file=bold, t_size=1),
         iterfield = ["t_min"],
@@ -482,32 +509,68 @@ def build_run_workflow(
     )
     extract_vols.inputs.t_min = list(range(len(mats)))
 
+    # ------------------------------------------------------------------
     # Stage 2C -- apply inv(MAT_t) to 3D mask, ref = vol_t  (MapNode)
-    # These ~400 intermediate 3D masks live entirely in scratch
+    # All ~400 intermediate 3D masks live entirely in scratch
+    # ------------------------------------------------------------------
     per_vol_mask = MapNode(
         fsl.FLIRT(interp="nearestneighbour", apply_xfm=True),
         iterfield = ["in_matrix_file", "reference"],
         name      = "per_vol_mask",
     )
     wf.connect([
-        (invert_motion_mats, per_vol_mask, [("out_file",  "in_matrix_file")]),
-        (extract_vols,       per_vol_mask, [("roi_file",  "reference")]),
-        (backnorm_3d,        per_vol_mask, [("out_file",  "in_file")]),
+        (invert_motion_mats, per_vol_mask, [("out_file", "in_matrix_file")]),
+        (extract_vols,       per_vol_mask, [("roi_file", "reference")]),
+        (backnorm_3d,        per_vol_mask, [("out_file", "in_file")]),
     ])
 
-    # Stage 2D -- merge into 4D motion-aware mask
+    # ------------------------------------------------------------------
+    # Stage 2D -- merge per-volume masks into 4D motion-aware mask
+    # ------------------------------------------------------------------
     merge_4d = Node(fsl.Merge(dimension="t"), name="merge_4d")
     wf.connect([(per_vol_mask, merge_4d, [("out_file", "in_files")])])
 
-    # Stage 3 -- apply 4D mask to BOLD; final output goes to Lustre
+    # ------------------------------------------------------------------
+    # Stage 3 -- apply 4D mask to raw BOLD (element-wise multiply)
+    # No out_file -- DataSink handles the copy to Lustre
+    # ------------------------------------------------------------------
     apply_mask = Node(
-        fsl.ApplyMask(
-            in_file  = bold,
-            out_file = str(out_dir / f"{pfx}_space-native_desc-maskedbold.nii.gz"),
-        ),
+        fsl.ApplyMask(in_file=bold),
         name="apply_mask",
     )
     wf.connect([(merge_4d, apply_mask, [("merged_file", "mask_file")])])
+
+    # ------------------------------------------------------------------
+    # Stage 4 -- DataSink: copy the three outputs from scratch to Lustre
+    #
+    # DataSink writes files to:
+    #   base_directory / container / @field_name / filename
+    #
+    # We use substitutions to strip the nipype-generated subfolder name
+    # from the path so files land flat in out_dir with clean BIDS names.
+    # ------------------------------------------------------------------
+    datasink = Node(DataSink(), name="datasink")
+    datasink.inputs.base_directory = str(out_dir)
+    datasink.inputs.container      = ""   # write directly into out_dir
+
+    # Substitutions: nipype adds an intermediate folder named after the
+    # output field (e.g. "@mask3d/") -- strip those away and rename files
+    datasink.inputs.substitutions = [
+        # strip nipype field-name subfolders
+        ("@mask3d/",   ""),
+        ("@mask4d/",   ""),
+        ("@masked/",   ""),
+        # rename to BIDS filenames
+        ("flirt.nii.gz",     f"{pfx}_space-native_mask.nii.gz"),
+        ("merged.nii.gz",    f"{pfx}_space-native_desc-mask4d.nii.gz"),
+        ("applymask.nii.gz", f"{pfx}_space-native_desc-maskedbold.nii.gz"),
+    ]
+
+    wf.connect([
+        (backnorm_3d, datasink, [("out_file",     "@mask3d")]),
+        (merge_4d,    datasink, [("merged_file",  "@mask4d")]),
+        (apply_mask,  datasink, [("out_file",      "@masked")]),
+    ])
 
     return wf
 
@@ -515,6 +578,7 @@ def build_run_workflow(
 # =============================================================================
 # Batch execution helper
 # =============================================================================
+
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -578,6 +642,7 @@ def run_batch(
 # =============================================================================
 # Main
 # =============================================================================
+
 def main():
     args = parse_args()
 
