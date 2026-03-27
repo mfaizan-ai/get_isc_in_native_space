@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=80          # 80 of 96 available cores -- leaves headroom for OS/other users
 #SBATCH --mem=400G                  # ~5 GB/core; nodes have 2 TB so this is conservative
-#SBATCH --time=12:00:00             # was 30h @ 16 cores; 80 cores should finish in ~3-5h
+#SBATCH --time=16:00:00             # was 30h @ 16 cores; 80 cores should finish in ~3-5h
 #SBATCH --partition=gpu             # only partition available on this cluster
 # No --gres=gpu line intentionally -- FSL is CPU-only, leave H200s free for GPU users
 
@@ -63,8 +63,8 @@ PIPELINE="back_norm_all_sub.py"   # the new HPC-optimized version
 #   python -u "${PIPELINE}" --n_procs 40 --memory_gb 200
 
 # -- Optional subject list from positional args -------------------------------
-# SUBJECTS=("$@")
-SUBJECTS=("IRN78")
+SUBJECTS=("$@")
+# SUBJECTS=("IRN78")
 
 if [ ${#SUBJECTS[@]} -gt 0 ]; then
     echo "Subjects   : ${SUBJECTS[*]}"
