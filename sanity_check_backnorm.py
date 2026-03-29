@@ -15,9 +15,6 @@ from matplotlib.colors import ListedColormap
 _RED = ListedColormap([(1, 0, 0, 1)])
 
 
-# =============================================================================
-# Defaults  (mirror the pipeline defaults)
-# =============================================================================
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
@@ -36,9 +33,7 @@ DEFAULTS = dict(
 )
 
 
-# =============================================================================
-# CLI
-# =============================================================================
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -63,9 +58,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# =============================================================================
-# Path resolution
-# =============================================================================
 def resolve_paths(args) -> dict:
     """
     Locate all required files for the chosen subject/session/run.
@@ -148,9 +140,7 @@ def resolve_paths(args) -> dict:
     return files, subject, session, run
 
 
-# =============================================================================
-# Helper utilities
-# =============================================================================
+
 def load(path) -> tuple:
     """Load NIfTI, return (data_float32, img)."""
     img  = nib.load(str(path))
@@ -204,9 +194,6 @@ def overlay_mosaic(ax_row, bg, mask, slices, bg_clim, title=""):
                              labelpad=4)
 
 
-# =============================================================================
-# Check 1 — Dimensions
-# =============================================================================
 def check_dimensions(files: dict) -> dict:
     print("\n" + "=" * 60)
     print("CHECK 1 — DIMENSIONS")
@@ -251,9 +238,6 @@ def check_dimensions(files: dict) -> dict:
     return results
 
 
-# =============================================================================
-# Check 2 — Voxel counts & volumes
-# =============================================================================
 def check_voxel_counts(files: dict) -> dict:
     print("\n" + "=" * 60)
     print("CHECK 2 — VOXEL COUNTS & VOLUMES")
@@ -289,9 +273,6 @@ def check_voxel_counts(files: dict) -> dict:
                 ratio=ratio, counts=counts, n_zero=n_zero)
 
 
-# =============================================================================
-# Check 3 — Motion effect on 4D mask centroid
-# =============================================================================
 def check_motion_effect(files: dict) -> dict:
     """
     Use the actual saved 4D mask to track centroid shifts across timepoints.
@@ -331,9 +312,6 @@ def check_motion_effect(files: dict) -> dict:
     return dict(cx=cx, cy=cy, cz=cz)
 
 
-# =============================================================================
-# Check 4 — Masked EPI signal
-# =============================================================================
 def check_masked_epi(files: dict) -> dict:
     print("\n" + "=" * 60)
     print("CHECK 4 — MASKED EPI SIGNAL")
@@ -379,9 +357,6 @@ def check_masked_epi(files: dict) -> dict:
                 frac_masked=frac_masked, snr=snr)
 
 
-# =============================================================================
-# Figure 1 — Template vs native mask mosaic
-# =============================================================================
 def fig_template_vs_native(files: dict, mean_bold_data, save_dir: Path, tag: str):
     print("\n  Plotting fig1: template vs native mask overlay ...")
 
@@ -412,9 +387,6 @@ def fig_template_vs_native(files: dict, mean_bold_data, save_dir: Path, tag: str
     print(f"    Saved: {out}")
 
 
-# =============================================================================
-# Figure 2 — Motion effect on 4D mask
-# =============================================================================
 def fig_motion_effect(motion: dict, vox_counts: dict,
                       save_dir: Path, tag: str):
     print("  Plotting fig2: motion effect on 4D mask ...")
@@ -449,9 +421,6 @@ def fig_motion_effect(motion: dict, vox_counts: dict,
     print(f"    Saved: {out}")
 
 
-# =============================================================================
-# Figure 3 — Masked EPI signal timeseries
-# =============================================================================
 def fig_masked_epi_signal(epi: dict, save_dir: Path, tag: str):
     print("  Plotting fig3: masked EPI signal ...")
 
@@ -497,9 +466,6 @@ def fig_masked_epi_signal(epi: dict, save_dir: Path, tag: str):
     print(f"    Saved: {out}")
 
 
-# =============================================================================
-# Figure 4 — Multi-plane mask slices on mean BOLD
-# =============================================================================
 def fig_mask_slices_native(files: dict, mean_bold_data, save_dir: Path, tag: str):
     print("  Plotting fig4: multi-plane 3D native mask on mean BOLD ...")
 
@@ -558,9 +524,7 @@ def fig_mask_slices_native(files: dict, mean_bold_data, save_dir: Path, tag: str
     print(f"    Saved: {out}")
 
 
-# =============================================================================
-# Figure 5 — Motion mask at selected timepoints (now uses actual 4D mask)
-# =============================================================================
+
 def fig_motion_mask_frames(files: dict, save_dir: Path, tag: str,
                            n_frames: int = 8):
     print("  Plotting fig5: 4D mask frames at selected timepoints ...")
@@ -616,9 +580,6 @@ def fig_motion_mask_frames(files: dict, save_dir: Path, tag: str,
     print(f"    Saved: {out}")
 
 
-# =============================================================================
-# Summary report
-# =============================================================================
 def print_summary(dims: dict, vox: dict, epi: dict, tag: str):
     print("\n" + "=" * 60)
     print(f"SUMMARY  —  {tag}")
@@ -645,9 +606,6 @@ def print_summary(dims: dict, vox: dict, epi: dict, tag: str):
     print("=" * 60)
 
 
-# =============================================================================
-# Main
-# =============================================================================
 def main():
     args     = parse_args()
     save_dir = Path(args.save_dir)
