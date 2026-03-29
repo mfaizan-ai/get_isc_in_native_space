@@ -50,10 +50,9 @@ log = logging.getLogger("backnorm")
 
 
 # =============================================================================
-# Default paths  -- edit here or override via CLI
+# Default paths  
 # =============================================================================
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
-
 DEFAULTS = dict(
     bids_dir         = _BIDS_DIR,
     workingdir       = f"{_BIDS_DIR}/workingdir",
@@ -72,11 +71,9 @@ DEFAULTS = dict(
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
 
-
 # =============================================================================
 # Scratch / TMPDIR management
 # =============================================================================
-
 _SCRATCH_DIR: Optional[Path] = None   # set once in setup_scratch()
 
 def setup_scratch() -> Path:
@@ -126,7 +123,6 @@ def _sigterm_handler(signum, frame):
 # =============================================================================
 # SLURM resource auto-detection
 # =============================================================================
-
 def detect_slurm_resources() -> Tuple[int, float]:
     """
     Return (n_procs, memory_gb) from SLURM environment variables.
@@ -173,9 +169,8 @@ def detect_slurm_resources() -> Tuple[int, float]:
 
 
 # =============================================================================
-# CLI
+# CLI argument parsing
 # =============================================================================
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -202,7 +197,6 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 # Path construction helpers  (unchanged from original)
 # =============================================================================
-
 def bold_path(bids_dir, subject, session, run) -> Path:
     return (
         Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -239,7 +233,6 @@ def output_prefix(subject, session, run) -> str:
 # =============================================================================
 # Discovery
 # =============================================================================
-
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -365,7 +358,6 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
 # =============================================================================
 # Progress callback
 # =============================================================================
-
 class ProgressTracker:
     """
     Progress callback for Nipype's MultiProc plugin.
@@ -404,7 +396,6 @@ class ProgressTracker:
 # =============================================================================
 # Nipype global config  (caching + crash dumps)
 # =============================================================================
-
 def configure_nipype(scratch: Path):
     """
     Enable hash-based caching so re-runs skip already-completed nodes.
@@ -425,7 +416,6 @@ def configure_nipype(scratch: Path):
 # =============================================================================
 # Per-run workflow  (identical processing logic, scratch-aware paths)
 # =============================================================================
-
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
@@ -614,7 +604,6 @@ def build_run_workflow(
 # =============================================================================
 # Batch execution helper
 # =============================================================================
-
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -678,7 +667,6 @@ def run_batch(
 # =============================================================================
 # Main
 # =============================================================================
-
 def main():
     args = parse_args()
 
