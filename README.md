@@ -206,3 +206,53 @@ python sanity_check_backnorm.py \\
 The following image visualize how the mask are overlayed over the raw bold signal these mask are motion aware as we do ```inv(affine)```
 
 ![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/sub-IRN78_ses-1_run-001_fig5_motion_mask_frames.png)
+
+
+### Inter subject correlation order wise alignment 
+The isc_data/ directory contains mean V1 time courses extracted from masked BOLD fMRI data, organized for inter-subject correlation (ISC) analysis. 
+The data is structured hierarchically by stimulus order (A–F), session, and run, with each .npy file representing the mean V1 time course (T,) for a specific subject segment. 
+This organization enables ISC computation aligned across subjects who watched the same stimulus order.
+```bash id="v9p2ds"
+isc_data/
+├── order-A/
+│   ├── ses-1/
+│   │   ├── run-1/
+│   │   │   ├── sub-ICC105.npy   # mean V1 time course (T,) for this segment
+│   │   │   ├── sub-ICC107.npy
+│   │   │   └── ...
+│   │   ├── run-2/
+│   │   │   └── ...
+│   ├── ses-2/
+│   │   ├── run-1/
+│   │   │   └── ...
+│   │   └── run-2/
+├── order-B/
+│   └── ses-1/
+│       └── ...
+├── order-C/
+│   └── ...
+├── order-D/
+│   └── ...
+├── order-E/
+│   └── ...
+└── order-F/
+    └── ...
+```
+
+To get the isc_time course data for each order, per session, per run:
+```bash
+    python extract_isc_data.py     # use default paths
+    python extract_isc_data.py --base_dir /path/to/derivatives \\
+                                --csv /path/to/seg.csv \\
+                                --out_dir /path/to/isc_data
+```
+
+As the data is ready, the inter-subject with leave-one-out (LOO) is computed keeping only the subjects with more than 20 time courses within session, run, and each oder. 
+
+```bash
+ 
+  python compute_isc.py      # default paths
+  python compute_isc.py --isc_dir /path/to/isc_data \\
+                        --out_dir /path/to/results \\
+                        --min_subjects 20
+```

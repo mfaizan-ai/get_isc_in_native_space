@@ -1,36 +1,12 @@
 """
 compute_isc.py
---------------
-Computes leave-one-out (LOO) Inter-Subject Correlation (ISC) from
-pre-extracted mean time courses (.npy files) organised as:
-
-    isc_data/
-    └── order-{X}/
-        └── ses-{N}/
-            └── run-{N}/
-                └── sub-XXXXX.npy   # shape: (T,)
-
-For each order / session / run cell with >= min_subjects subjects:
-  - Computes LOO ISC (each subject correlated with mean of all others)
-  - Averages correlations using Fisher z-transform (correct practice)
-  - Saves per-cell results and a summary CSV
-  - Produces time course plots and ISC bar/summary plots
-
-Best-practice notes
--------------------
-* LOO ISC: r_i = corr(ts_i,  mean(ts_{j != i}))  — Nastase et al. 2019
-* Correlations averaged via Fisher z-transform, then back-transformed
-* Minimum N = 20 (below this, LOO ISC variance is too high to interpret;
-  see Chen et al. 2020, NeuroImage)
-* Plots show individual traces + group mean time course, and per-subject
-  ISC with group mean ± SD band
 
 Usage
 -----
     python compute_isc.py                         # default paths
     python compute_isc.py --isc_dir /path/to/isc_data \\
                            --out_dir /path/to/results \\
-                           --min_subjects 20
+                        --min_subjects 20
 """
 
 import os
@@ -47,9 +23,6 @@ from matplotlib.ticker import MaxNLocator
 from scipy.stats import t as t_dist
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ARGUMENT PARSING
-# ─────────────────────────────────────────────────────────────────────────────
 def parse_args():
     DEFAULT_ISC = (
         "/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives"
@@ -78,10 +51,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADING
-# ─────────────────────────────────────────────────────────────────────────────
+# Data loading 
 def load_cell(cell_dir):
     """
     Load all sub-*.npy files from a leaf directory.
@@ -122,10 +92,7 @@ def iter_cells(isc_dir):
                     continue
                 yield order, ses, run, rp
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ISC COMPUTATION
-# ─────────────────────────────────────────────────────────────────────────────
+# compute ISC   
 def fisher_z(r):
     """Apply Fisher z-transform, clipping to avoid inf at ±1."""
     r = np.clip(r, -0.9999, 0.9999)
@@ -176,10 +143,7 @@ def loo_isc(timecourses):
 
     return isc_values, mean_isc, std_isc, ci_low, ci_high
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PLOTTING
-# ─────────────────────────────────────────────────────────────────────────────
+# visualization
 PALETTE = {
     "bg":        "#0f1117",
     "panel":     "#1a1d27",
@@ -361,9 +325,6 @@ def plot_isc_summary(summary_df, out_path):
     plt.close(fig)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RESULTS SAVING
-# ─────────────────────────────────────────────────────────────────────────────
 def save_per_cell_results(out_dir, label, subjects, isc_values,
                           mean_isc, std_isc, ci_low, ci_high):
     """Save per-subject LOO ISC values as a CSV for this cell."""
@@ -395,9 +356,6 @@ def print_summary_table(summary_df):
     print("=" * 72)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     args        = parse_args()
     ISC_DIR     = args.isc_dir

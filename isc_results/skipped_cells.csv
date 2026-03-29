@@ -1,0 +1,11 @@
+cell,n_subjects,reason
+order-A/ses-2/run-1,17,N < 20
+order-A/ses-2/run-2,4,N < 20
+order-B/ses-2/run-2,4,N < 20
+order-C/ses-2/run-2,3,N < 20
+order-D/ses-2/run-1,13,N < 20
+order-D/ses-2/run-2,1,N < 20
+order-E/ses-2/run-1,15,N < 20
+order-E/ses-2/run-2,3,N < 20
+order-F/ses-2/run-1,16,N < 20
+order-F/ses-2/run-2,3,N < 20

@@ -1,28 +1,3 @@
-"""
-extract_isc_data.py
---------------------
-Extracts mean time courses from already-masked BOLD fMRI data per
-subject / session / run / order, and organises them into an ISC-ready
-directory structure.
-
-The masked_bold NIfTI files are already brain-masked — no mask application
-is needed. We simply slice the correct timepoints and average across all
-non-zero voxels.
-
-Usage:
-    python extract_isc_data.py                          # use default paths
-    python extract_isc_data.py --base_dir /path/to/derivatives \\
-                                --csv /path/to/seg.csv \\
-                                --out_dir /path/to/isc_data
-
-Output layout:
-    isc_data/
-    └── order-{X}/
-        └── ses-{N}/
-            └── run-{N}/
-                └── sub-XXXXX.npy   # shape: (T_seg,)
-"""
-
 import os
 import glob
 import argparse
@@ -32,9 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ARGUMENT PARSING
-# ─────────────────────────────────────────────────────────────────────────────
+
 def parse_args():
     DEFAULT_BASE = "/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis"
     DEFAULT_CSV  = "per_order_alignment/segments_mapping_each_sub_usable.csv"
@@ -59,9 +32,7 @@ def parse_args():
     return parser.parse_args()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+
 def find_masked_bold(base_dir, subject, session):
     """
     Glob for masked BOLD files for a given subject / session.
@@ -103,9 +74,6 @@ def save_npy(out_dir, subject, data):
     return out_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# POST-HOC REPORTING  (both functions scan disk, not in-memory state)
-# ─────────────────────────────────────────────────────────────────────────────
 def print_file_table(isc_out_dir):
     """
     Scans the saved ISC output directory and prints a table with
@@ -231,9 +199,6 @@ def sanity_check_alignment(isc_out_dir):
     return all_pass
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
 

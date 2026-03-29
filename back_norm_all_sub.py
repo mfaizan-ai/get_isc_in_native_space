@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""
-Back-normalization pipeline  --  HPC/SLURM-optimized version
-=============================================================
-Improvements over the original:
-  - Node-local scratch (/scratch/$USER/$SLURM_JOB_ID) for all intermediate
-    files, avoiding Lustre network I/O during the heavy MapNode stages.
-  - TMPDIR is created at startup and deleted at exit (atexit + SIGTERM handler).
-  - n_procs is auto-detected from $SLURM_CPUS_PER_TASK (CLI still overrides).
-  - memory_gb is auto-detected from $SLURM_MEM_PER_NODE / SLURM_MEM_PER_CPU
-    and distributed across processes so Nipype can throttle greedy nodes.
-  - Nipype hash-based caching is enabled: re-running the same job after a
-    partial failure will skip already-completed nodes automatically.
-  - A progress callback prints a running count of completed / failed nodes
-    so you can see forward motion in SLURM logs without tail-ing nipype logs.
-  - Large graphs (>500 runs) are automatically batched so the NetworkX graph
-    does not become too heavy to schedule efficiently.
-  - Final outputs are always written directly to Lustre (output_dir); only
-    scratch/intermediate files live on the local disk.  Original data is
-    never touched.
-"""
 
 import argparse
 import re
@@ -38,9 +18,7 @@ from nipype import Node, MapNode, Workflow, config as nipype_config
 from nipype.interfaces import fsl
 from nipype.interfaces.io import DataSink
 
-# ---------------------------------------------------------------------------
-# Logging  --  one logger for the whole script (separate from nipype's own)
-# ---------------------------------------------------------------------------
+
 logging.basicConfig(
     level   = logging.INFO,
     format  = "%(asctime)s [%(levelname)s] %(message)s",
@@ -119,10 +97,7 @@ def _sigterm_handler(signum, frame):
     _cleanup_scratch()
     sys.exit(0)
 
-
-# =============================================================================
-# SLURM resource auto-detection
-# =============================================================================
+# detect auto slurm resoures 
 def detect_slurm_resources() -> Tuple[int, float]:
     """
     Return (n_procs, memory_gb) from SLURM environment variables.
@@ -167,10 +142,6 @@ def detect_slurm_resources() -> Tuple[int, float]:
 
     return n_procs, memory_gb
 
-
-# =============================================================================
-# CLI argument parsing
-# =============================================================================
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__,
@@ -194,9 +165,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# =============================================================================
-# Path construction helpers  (unchanged from original)
-# =============================================================================
+
 def bold_path(bids_dir, subject, session, run) -> Path:
     return (
         Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -230,9 +199,6 @@ def output_prefix(subject, session, run) -> str:
     return f"sub-{subject}_ses-{session}_task-videos_run-{run}"
 
 
-# =============================================================================
-# Discovery
-# =============================================================================
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -264,9 +230,7 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
     return pairs
 
 
-# =============================================================================
-# Path validation
-# =============================================================================
+
 _G = "\033[32m"; _R = "\033[31m"; _Y = "\033[33m"; _E = "\033[0m"
 def _ok(m):   return f"{_G}  OK   {_E}{m}"
 def _miss(m): return f"{_R}  MISS {_E}{m}"
@@ -355,9 +319,6 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
     return ready, skipped
 
 
-# =============================================================================
-# Progress callback
-# =============================================================================
 class ProgressTracker:
     """
     Progress callback for Nipype's MultiProc plugin.
@@ -393,9 +354,6 @@ class ProgressTracker:
         )
 
 
-# =============================================================================
-# Nipype global config  (caching + crash dumps)
-# =============================================================================
 def configure_nipype(scratch: Path):
     """
     Enable hash-based caching so re-runs skip already-completed nodes.
@@ -413,9 +371,7 @@ def configure_nipype(scratch: Path):
     (scratch / "crashdumps").mkdir(parents=True, exist_ok=True)
 
 
-# =============================================================================
-# Per-run workflow  (identical processing logic, scratch-aware paths)
-# =============================================================================
+
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
@@ -601,9 +557,6 @@ def build_run_workflow(
     return wf
 
 
-# =============================================================================
-# Batch execution helper
-# =============================================================================
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -664,9 +617,7 @@ def run_batch(
     )
 
 
-# =============================================================================
-# Main
-# =============================================================================
+
 def main():
     args = parse_args()
 
