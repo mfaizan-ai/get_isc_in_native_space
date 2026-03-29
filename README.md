@@ -147,18 +147,19 @@ faizan_analysis/
 Subject: IRN78
 
 ```bash id="k9w4lm"
-sub-IRN78/
-└── ses-1/
-    └── func/
-        ├── sub-IRN78_ses-1_task-videos_run-001_meanbold.nii.gz
-        ├── sub-IRN78_ses-1_task-videos_run-001_norm_matrix_inverse.mat
-        ├── sub-IRN78_ses-1_task-videos_run-001_space-native_desc-maskedbold.nii.gz
-        ├── sub-IRN78_ses-1_task-videos_run-001_space-native_mask.nii.gz
-        │
-        ├── sub-IRN78_ses-1_task-videos_run-002_meanbold.nii.gz
-        ├── sub-IRN78_ses-1_task-videos_run-002_norm_matrix_inverse.mat
-        ├── sub-IRN78_ses-1_task-videos_run-002_space-native_desc-maskedbold.nii.gz
-        └── sub-IRN78_ses-1_task-videos_run-002_space-native_mask.nii.gz
+faizan_analysis/
+├── isc_data/
+├── sub-ICC105/
+├── sub-IRC17/
+├── sub-IRN78/   ← example subject
+│   └── ses-1/
+│       └── func/
+│           ├── mask_4d/
+│           ├── mask_native/
+│           └── masked_bold/
+│               ├── sub-IRN78_ses-1_task-videos_run-001_space-native_desc-maskedbold.nii.gz
+│               └── sub-IRN78_ses-1_task-videos_run-002_space-native_desc-maskedbold.nii.gz
+├── ...
 ```
 This should have successufly saved the each subject output for masked epi, inverse affine that backnormalize the bold from template to native space, mask in native space etc. 
 
