@@ -2,7 +2,7 @@ logs/
 runs/
 __pycache__/
 # isc_results/
-
+sanity_checks/
 *.pt
 *.pth
 *.pdf
