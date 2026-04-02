@@ -35,6 +35,10 @@ DEFAULTS = dict(
     bids_dir         = _BIDS_DIR,
     workingdir       = f"{_BIDS_DIR}/workingdir",
     mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
+    template_schaefer_atlast = (
+        f"{_BIDS_DIR}/derivatives/templates/rois/"
+        "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+    ),
     template_mask    = (
         f"{_BIDS_DIR}/derivatives/templates/mask/"
         "binary_mask_from_julichbrainatlas_3.1_207areas_MPM_MNI152"
@@ -96,6 +100,7 @@ def _sigterm_handler(signum, frame):
     log.info("Received SIGTERM -- cleaning up and exiting.")
     _cleanup_scratch()
     sys.exit(0)
+
 
 # detect auto slurm resoures 
 def detect_slurm_resources() -> Tuple[int, float]:
@@ -163,7 +168,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size",       type=int, default=DEFAULTS["batch_size"],
                    help="Max runs per meta-workflow graph (default: 200)")
     return p.parse_args()
-
 
 
 def bold_path(bids_dir, subject, session, run) -> Path:
@@ -369,7 +373,6 @@ def configure_nipype(scratch: Path):
     nipype_config.set("logging",   "interface_level",      "WARNING")
 
     (scratch / "crashdumps").mkdir(parents=True, exist_ok=True)
-
 
 
 def build_run_workflow(
