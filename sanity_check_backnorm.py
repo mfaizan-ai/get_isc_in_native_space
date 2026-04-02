@@ -14,7 +14,6 @@ from matplotlib.colors import ListedColormap
 # Solid red colormap for mask overlays (autumn renders yellow at value=1)
 _RED = ListedColormap([(1, 0, 0, 1)])
 
-
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
@@ -31,8 +30,6 @@ DEFAULTS = dict(
     ),
     save_dir      = "./sanity_checks",
 )
-
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -72,7 +69,7 @@ def resolve_paths(args) -> dict:
     from the raw BOLD (fslmaths -Tmean equivalent via numpy mean).
     """
     subject = args.subject
-
+    
     # -- locate session -------------------------------------------------------
     func_base = Path(args.output_dir) / f"sub-{subject}"
     if args.session:
@@ -124,7 +121,6 @@ def resolve_paths(args) -> dict:
         # mean_bold is computed on the fly -- not a saved file
         # It is added to this dict after loading bold_raw (see load_mean_bold)
     )
-
     # -- check all files exist ------------------------------------------------
     missing = [k for k, v in files.items() if not v.exists()]
     if missing:
@@ -136,17 +132,13 @@ def resolve_paths(args) -> dict:
     print(f"  Run     : run-{run}")
     for k, v in files.items():
         print(f"    {k:<16} {v}")
-
     return files, subject, session, run
-
-
 
 def load(path) -> tuple:
     """Load NIfTI, return (data_float32, img)."""
     img  = nib.load(str(path))
     data = img.get_fdata(dtype=np.float32)
     return data, img
-
 
 def load_mean_bold(bold_path) -> tuple:
     """
@@ -159,11 +151,9 @@ def load_mean_bold(bold_path) -> tuple:
     mean_vol = data.mean(axis=-1)
     return mean_vol, img
 
-
 def mask_volume_mm3(mask_data, img) -> float:
     vox_mm3 = float(np.prod(np.abs(img.header.get_zooms()[:3])))
     return float((mask_data > 0).sum()) * vox_mm3
-
 
 def percentile_clim(data, lo=2, hi=98):
     nonzero = data[data > 0]
