@@ -620,7 +620,6 @@ def run_batch(
     )
 
 
-
 def main():
     args = parse_args()
 
@@ -689,7 +688,6 @@ def main():
         log.info(f"    - {s}")
     log.info(f"  Outputs  : {args.output_dir}")
     log.info("=" * 60)
-
 
 if __name__ == "__main__":
     main()
