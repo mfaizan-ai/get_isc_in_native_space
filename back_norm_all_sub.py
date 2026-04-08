@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import argparse
 import json
 import re
@@ -34,19 +33,16 @@ log = logging.getLogger("backnorm")
 # =============================================================================
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DEFAULTS = dict(
-    bids_dir         = _BIDS_DIR,
-    workingdir       = f"{_BIDS_DIR}/workingdir",
-    mcflirt_mats_dir = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
-    template_schaefer_atlast = (
+    bids_dir              = _BIDS_DIR,
+    workingdir            = f"{_BIDS_DIR}/workingdir",
+    mcflirt_mats_dir      = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
+    template_schaefer_atlas = (
         f"{_BIDS_DIR}/derivatives/templates/rois/"
         "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
     ),
-    template_mask    = (
-        f"{_BIDS_DIR}/derivatives/templates/mask/"
-        "binary_mask_from_julichbrainatlas_3.1_207areas_MPM_MNI152"
-        "_space-nihpd-02-05_2mm.nii.gz"
-    ),
-    output_dir      = f"{_BIDS_DIR}/derivatives/faizan_analysis",
+    # Outputs go into faizan_analysis/schaefer_backnorm/ to keep Schaefer
+    # results separate from any other back-normalisation runs
+    output_dir            = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm",
     # nipype_work_dir intentionally left None -- resolved at runtime from scratch
     n_procs         = None,   # None = auto-detect from SLURM
     memory_gb       = None,   # None = auto-detect from SLURM
@@ -58,6 +54,7 @@ DEFAULTS = dict(
 )
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
+
 # =============================================================================
 # Scratch / TMPDIR management
 # =============================================================================
@@ -80,6 +77,7 @@ def setup_scratch() -> Path:
 
     return scratch
 
+
 def _cleanup_scratch():
     if _SCRATCH_DIR and _SCRATCH_DIR.exists():
         log.info(f"Cleaning up scratch: {_SCRATCH_DIR}")
@@ -87,6 +85,7 @@ def _cleanup_scratch():
             shutil.rmtree(_SCRATCH_DIR)
         except Exception as e:
             log.warning(f"Could not remove scratch dir: {e}")
+
 
 def _sigterm_handler(signum, frame):
     log.info("Received SIGTERM -- cleaning up and exiting.")
@@ -140,7 +139,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--workingdir",       default=DEFAULTS["workingdir"],
                    help="Directory containing per-subject normalization matrices")
     p.add_argument("--mcflirt_mats_dir", default=DEFAULTS["mcflirt_mats_dir"])
-    p.add_argument("--template_mask",    default=DEFAULTS["template_mask"])
+    p.add_argument("--template_schaefer_atlas", default=DEFAULTS["template_schaefer_atlas"],
+                   help="Schaefer atlas in template space (back-normalised to native)")
     p.add_argument("--output_dir",       default=DEFAULTS["output_dir"])
     p.add_argument("--nipype_work_dir",  default=None,
                    help="Override Nipype scratch dir (default: node-local scratch)")
@@ -317,9 +317,9 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
     print("PATH VALIDATION" + ("  [topup mode]" if args.use_topup else ""))
     print("=" * 70)
 
-    tmask = Path(args.template_mask)
-    print(_ok(f"template_mask   {tmask}") if tmask.exists()
-          else _miss(f"template_mask   {tmask}"))
+    tmask = Path(args.template_schaefer_atlas)
+    print(_ok(f"template_schaefer_atlas  {tmask}") if tmask.exists()
+          else _miss(f"template_schaefer_atlas  {tmask}"))
     if not tmask.exists():
         total_issues += 1
     print()
@@ -584,7 +584,7 @@ def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> 
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
-    template_mask, output_dir,
+    template_schaefer_atlas, output_dir,
     nipype_work_dir,
     bids_dir,           # [TOPUP] needed to locate fieldmaps; harmless when unused
     use_topup = False,  # [TOPUP] off by default -- original behaviour preserved
@@ -670,7 +670,7 @@ def build_run_workflow(
     # ------------------------------------------------------------------
     backnorm_3d = Node(
         fsl.FLIRT(
-            in_file   = template_mask,
+            in_file   = template_schaefer_atlas,
             interp    = "nearestneighbour",
             apply_xfm = True,
         ),
@@ -799,7 +799,6 @@ def build_run_workflow(
 # =============================================================================
 # Batch runner  (one new kwarg: use_topup, passed straight through)
 # =============================================================================
-
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -836,7 +835,7 @@ def run_batch(
             bold            = str(bold_path(args.bids_dir, subject, session, run)),
             fwd_mat         = str(norm_mat_path(args.workingdir, subject, session, run)),
             mats            = mats,
-            template_mask   = args.template_mask,
+            template_schaefer_atlas = args.template_schaefer_atlas,
             output_dir      = args.output_dir,
             nipype_work_dir = nipype_work_dir,
             bids_dir        = args.bids_dir,   # [TOPUP] needed for fmap lookup
@@ -866,7 +865,6 @@ def run_batch(
 # =============================================================================
 # Main  (unchanged except passing use_topup through)
 # =============================================================================
-
 def main():
     args = parse_args()
 
