@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import argparse
 import json
 import re
@@ -240,21 +239,60 @@ def fmap_paths(bids_dir: str, subject: str, session: str) -> Tuple[List[Path], L
 
 def _read_fmap_params(fmap_files: List[Path]) -> Tuple[List[str], List[float]]:
     """
-    Read PhaseEncodingDirection and EffectiveEchoSpacing from JSON sidecars.
+    Read PhaseEncodingDirection and TotalReadoutTime from JSON sidecars.
     Returns (encoding_directions, readout_times) parallel to fmap_files.
-    Mirrors the select_fmaps() logic in the main pipeline.
+
+    FSL topup requires TotalReadoutTime (seconds, range 0.01-0.2 s) --
+    NOT EffectiveEchoSpacing. EffectiveEchoSpacing is the dwell time per
+    k-space line (~0.5 ms); TotalReadoutTime is that multiplied by
+    (PE_steps - 1) and is what topup's --datain file expects.
+
+    Priority:
+      1. TotalReadoutTime  from the JSON sidecar  (preferred, always present
+         in well-formed BIDS datasets)
+      2. Computed fallback: EffectiveEchoSpacing x (n_PE_lines - 1)
+         using the image second dimension as an approximation of PE steps.
     """
+    import nibabel as nib
+
     remap = {"i": "x", "i-": "x-", "j": "y", "j-": "y-", "k": "z", "k-": "z-"}
-    enc_dirs     = []
+    enc_dirs      = []
     readout_times = []
+
     for fmap in fmap_files:
         stem = fmap.with_suffix("") if fmap.suffix == ".gz" else fmap
-        stem = stem.with_suffix("")           # strip .nii
+        stem = stem.with_suffix("")
         json_path = stem.with_suffix(".json")
         with open(json_path) as f:
             meta = json.load(f)
+
         enc_dirs.append(remap[meta["PhaseEncodingDirection"]])
-        readout_times.append(float(meta["EffectiveEchoSpacing"]))
+
+        if "TotalReadoutTime" in meta:
+            rt = float(meta["TotalReadoutTime"])
+            log.info(f"    {fmap.name}: TotalReadoutTime = {rt:.5f} s  (from JSON)")
+        elif "EffectiveEchoSpacing" in meta:
+            pe_steps = int(nib.load(str(fmap)).shape[1])
+            rt = float(meta["EffectiveEchoSpacing"]) * (pe_steps - 1)
+            log.warning(
+                f"    {fmap.name}: TotalReadoutTime missing -- "
+                f"computed as EffectiveEchoSpacing ({meta['EffectiveEchoSpacing']}) "
+                f"x (PE_steps-1) ({pe_steps-1}) = {rt:.5f} s"
+            )
+        else:
+            raise KeyError(
+                f"Neither TotalReadoutTime nor EffectiveEchoSpacing found "
+                f"in {json_path}. Cannot run topup."
+            )
+
+        if not (0.01 <= rt <= 0.2):
+            log.warning(
+                f"    {fmap.name}: readout time {rt:.5f} s is outside FSL's "
+                f"expected range (0.01-0.2 s). Check JSON sidecar."
+            )
+
+        readout_times.append(rt)
+
     return enc_dirs, readout_times
 
 
