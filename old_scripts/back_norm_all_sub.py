@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import re
 import atexit
 import logging
@@ -13,12 +12,10 @@ import time
 from pathlib import Path
 
 from typing import List, Optional, Tuple
-
 import nipype.pipeline.engine as pe
 from nipype import Node, MapNode, Workflow, config as nipype_config
 from nipype.interfaces import fsl
 from nipype.interfaces.io import DataSink
-from nipype.interfaces.utility import Function
 
 
 logging.basicConfig(
@@ -27,7 +24,6 @@ logging.basicConfig(
     datefmt = "%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("backnorm")
-
 
 # =============================================================================
 # Default paths  
@@ -51,10 +47,6 @@ DEFAULTS = dict(
     n_procs         = None,   # None = auto-detect from SLURM
     memory_gb       = None,   # None = auto-detect from SLURM
     batch_size      = 200,    # max runs per meta-workflow to keep graph lean
-    # -------------------------------------------------------------------------
-    # [TOPUP] defaults -- only used when --use_topup is passed
-    # -------------------------------------------------------------------------
-    use_topup       = False,  # off by default; existing runs unaffected
 )
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
@@ -65,6 +57,16 @@ EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
 _SCRATCH_DIR: Optional[Path] = None   # set once in setup_scratch()
 
 def setup_scratch() -> Path:
+    """
+    Create a job-specific scratch directory on node-local storage.
+
+    Priority order:
+      1.  /scratch/$USER/$SLURM_JOB_ID   (preferred on most HPC clusters)
+      2.  $TMPDIR                         (set by some schedulers)
+      3.  /tmp/$USER_backnorm_<pid>        (fallback)
+
+    The directory is registered for automatic cleanup via atexit and SIGTERM.
+    """
     global _SCRATCH_DIR
 
     user    = os.environ.get("USER", "user")
@@ -76,6 +78,7 @@ def setup_scratch() -> Path:
     _SCRATCH_DIR = scratch
     log.info(f"Scratch directory : {scratch}")
 
+    # Register cleanup
     atexit.register(_cleanup_scratch)
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
@@ -97,7 +100,13 @@ def _sigterm_handler(signum, frame):
     sys.exit(0)
 
 
+# detect auto slurm resoures 
 def detect_slurm_resources() -> Tuple[int, float]:
+    """
+    Return (n_procs, memory_gb) from SLURM environment variables.
+    Falls back to conservative defaults if not running under SLURM.
+    """
+    # ---- CPUs ----------------------------------------------------------------
     cpus_str = (
         os.environ.get("SLURM_CPUS_PER_TASK")
         or os.environ.get("SLURM_NPROCS")
@@ -114,6 +123,8 @@ def detect_slurm_resources() -> Tuple[int, float]:
     else:
         log.info(f"SLURM CPUs detected  : {n_procs}")
 
+    # ---- Memory --------------------------------------------------------------
+    # SLURM_MEM_PER_NODE is in MB; SLURM_MEM_PER_CPU is also in MB
     mem_node = os.environ.get("SLURM_MEM_PER_NODE")
     mem_cpu  = os.environ.get("SLURM_MEM_PER_CPU")
     try:
@@ -154,22 +165,8 @@ def parse_args() -> argparse.Namespace:
                    help="Total memory in GB (default: from SLURM env)")
     p.add_argument("--batch_size",       type=int, default=DEFAULTS["batch_size"],
                    help="Max runs per meta-workflow graph (default: 200)")
-    # -------------------------------------------------------------------------
-    # [TOPUP] new flag -- all other args unchanged
-    # -------------------------------------------------------------------------
-    p.add_argument("--use_topup",        action="store_true", default=False,
-                   help=(
-                       "Apply FSL topup distortion correction to the BOLD "
-                       "before back-normalizing the mask. Requires AP and PA "
-                       "fieldmap files in the BIDS fmap/ directory. "
-                       "Without this flag the pipeline behaves exactly as before."
-                   ))
     return p.parse_args()
 
-
-# =============================================================================
-# Path helpers  (originals unchanged)
-# =============================================================================
 
 def bold_path(bids_dir, subject, session, run) -> Path:
     return (
@@ -204,66 +201,6 @@ def output_prefix(subject, session, run) -> str:
     return f"sub-{subject}_ses-{session}_task-videos_run-{run}"
 
 
-# =============================================================================
-# [TOPUP] path helpers -- new, mirrors main pipeline style
-# =============================================================================
-
-def fmap_paths(bids_dir: str, subject: str, session: str) -> Tuple[List[Path], List[Path]]:
-    """
-    Return (ap_fmaps, pa_fmaps) for a given subject/session.
-
-    AP and PA are allowed to have different run numbers (e.g. IRN78 has
-    dir-AP_run-001 and dir-PA_run-002) -- the wildcard run-* handles this.
-    Files are sorted so ordering is deterministic across runs.
-    """
-    fmap_dir = Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "fmap"
-    if not fmap_dir.exists():
-        log.warning(f"  [{subject} ses-{session}] No fmap/ directory found at {fmap_dir}")
-        return [], []
-
-    ap = sorted(fmap_dir.glob(
-        f"sub-{subject}_ses-{session}_dir-AP_run-*_epi.nii.gz"))
-    pa = sorted(fmap_dir.glob(
-        f"sub-{subject}_ses-{session}_dir-PA_run-*_epi.nii.gz"))
-
-    # Log what was found so it's easy to verify correct files are picked
-    for f in ap:
-        log.info(f"  [{subject} ses-{session}] Found AP fmap: {f.name}")
-    for f in pa:
-        log.info(f"  [{subject} ses-{session}] Found PA fmap: {f.name}")
-
-    if not ap:
-        log.warning(f"  [{subject} ses-{session}] No AP fieldmaps found in {fmap_dir}")
-    if not pa:
-        log.warning(f"  [{subject} ses-{session}] No PA fieldmaps found in {fmap_dir}")
-
-    return ap, pa
-
-
-def _read_fmap_params(fmap_files: List[Path]) -> Tuple[List[str], List[float]]:
-    """
-    Read PhaseEncodingDirection and EffectiveEchoSpacing from JSON sidecars.
-    Returns (encoding_directions, readout_times) parallel to fmap_files.
-    Mirrors the select_fmaps() logic in the main pipeline.
-    """
-    remap = {"i": "x", "i-": "x-", "j": "y", "j-": "y-", "k": "z", "k-": "z-"}
-    enc_dirs     = []
-    readout_times = []
-    for fmap in fmap_files:
-        stem = fmap.with_suffix("") if fmap.suffix == ".gz" else fmap
-        stem = stem.with_suffix("")           # strip .nii
-        json_path = stem.with_suffix(".json")
-        with open(json_path) as f:
-            meta = json.load(f)
-        enc_dirs.append(remap[meta["PhaseEncodingDirection"]])
-        readout_times.append(float(meta["EffectiveEchoSpacing"]))
-    return enc_dirs, readout_times
-
-
-# =============================================================================
-# Discovery helpers  (unchanged)
-# =============================================================================
-
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -295,9 +232,6 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
     return pairs
 
 
-# =============================================================================
-# Validation
-# =============================================================================
 
 _G = "\033[32m"; _R = "\033[31m"; _Y = "\033[33m"; _E = "\033[0m"
 def _ok(m):   return f"{_G}  OK   {_E}{m}"
@@ -306,18 +240,13 @@ def _warn(m): return f"{_Y}  WARN {_E}{m}"
 
 
 def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]]:
-    """
-    Validates all required input files.
-    When --use_topup is active, also checks for AP and PA fieldmap files.
-    Original checks are completely unchanged.
-    """
     import nibabel as nib
 
     ready, skipped = [], []
     total_issues   = 0
 
     print("\n" + "=" * 70)
-    print("PATH VALIDATION" + ("  [topup mode]" if args.use_topup else ""))
+    print("PATH VALIDATION")
     print("=" * 70)
 
     tmask = Path(args.template_mask)
@@ -372,38 +301,6 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
                 print(_miss(f"  mcflirt_dir  {md}"))
                 issues += 1
 
-            # -----------------------------------------------------------------
-            # [TOPUP] fieldmap validation -- only runs when --use_topup is set
-            # -----------------------------------------------------------------
-            if args.use_topup:
-                ap_fmaps, pa_fmaps = fmap_paths(args.bids_dir, subject, session)
-                if ap_fmaps:
-                    print(_ok(f"  fmap AP      {ap_fmaps[0].parent}  ({len(ap_fmaps)} file(s))"))
-                else:
-                    print(_miss(f"  fmap AP      no AP fieldmaps found for ses-{session}"))
-                    issues += 1
-                if pa_fmaps:
-                    print(_ok(f"  fmap PA      {pa_fmaps[0].parent}  ({len(pa_fmaps)} file(s))"))
-                else:
-                    print(_miss(f"  fmap PA      no PA fieldmaps found for ses-{session}"))
-                    issues += 1
-
-                # Check JSON sidecars exist alongside each fmap
-                all_fmaps = ap_fmaps + pa_fmaps
-                missing_json = [
-                    f for f in all_fmaps
-                    if not f.with_suffix("").with_suffix(".json").exists()
-                    and not f.parent.joinpath(
-                        f.name.replace(".nii.gz", ".json")).exists()
-                ]
-                if missing_json:
-                    for mj in missing_json:
-                        print(_miss(f"  fmap JSON    missing sidecar for {mj.name}"))
-                    issues += len(missing_json)
-                else:
-                    print(_ok(f"  fmap JSON    all sidecars present"))
-            # -----------------------------------------------------------------
-
             if issues == 0:
                 print(f"  -> {_G}ALL OK{_E}")
                 ready.append((subject, session, run))
@@ -424,14 +321,15 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
     return ready, skipped
 
 
-# =============================================================================
-# Progress tracker  (unchanged)
-# =============================================================================
-
 class ProgressTracker:
     """
     Progress callback for Nipype's MultiProc plugin.
-    Deliberately avoids threading primitives so it is safely picklable.
+
+    NOTE: Nipype deepcopies nodes (and anything reachable from plugin_args)
+    before sending them to worker processes.  threading.Lock is not picklable
+    and will cause a TypeError crash.  This class deliberately avoids any
+    threading primitives so it can be safely deepcopied/pickled.
+    Minor counter inaccuracy under heavy parallelism is acceptable for logging.
     """
     def __init__(self, total_nodes: int):
         self._done   = 0
@@ -458,14 +356,16 @@ class ProgressTracker:
         )
 
 
-# =============================================================================
-# Nipype configuration  (unchanged)
-# =============================================================================
-
 def configure_nipype(scratch: Path):
+    """
+    Enable hash-based caching so re-runs skip already-completed nodes.
+    Write crash files to scratch (fast local disk, human-readable).
+    """
     nipype_config.set("execution", "stop_on_first_crash",  "false")
     nipype_config.set("execution", "crashdump_dir",        str(scratch / "crashdumps"))
     nipype_config.set("execution", "hash_method",          "content")
+    # Keep all node working dirs after completion so the hash cache persists
+    # between re-runs (nodes whose outputs haven't changed will be skipped).
     nipype_config.set("execution", "remove_unnecessary_outputs", "false")
     nipype_config.set("logging",   "workflow_level",       "INFO")
     nipype_config.set("logging",   "interface_level",      "WARNING")
@@ -473,134 +373,27 @@ def configure_nipype(scratch: Path):
     (scratch / "crashdumps").mkdir(parents=True, exist_ok=True)
 
 
-# =============================================================================
-# [TOPUP] helper nodes -- mirrors the main pipeline's select_fmaps approach
-# =============================================================================
-
-def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> Tuple:
-    """
-    Build the topup-related nodes and return them ready to be wired into
-    the per-run workflow.
-
-    Chain:  hmc_fmaps -> mean_fmaps -> merge_fmaps -> topup -> applytopup
-
-    AP fieldmaps are always listed first in all_fmaps so they occupy row 1
-    of the topup encoding file.  The BOLD was acquired with AP phase-encoding,
-    so applytopup receives index=[1] (1-based FSL convention) to tell it
-    which encoding row corresponds to the input BOLD.
-
-    AP and PA are allowed to have different run numbers (e.g. IRN78 uses
-    dir-AP_run-001 / dir-PA_run-002) -- fmap_paths() handles this with
-    wildcards and logs exactly which files were found.
-    """
-    ap_fmaps, pa_fmaps = fmap_paths(bids_dir, subject, session)
-
-    if not ap_fmaps or not pa_fmaps:
-        raise FileNotFoundError(
-            f"[{subject} ses-{session}] Cannot build topup nodes: "
-            f"AP fmaps found={len(ap_fmaps)}, PA fmaps found={len(pa_fmaps)}. "
-            f"Check fmap/ directory."
-        )
-
-    # AP first, PA second -- this ordering sets which row index maps to AP
-    all_fmaps = [str(f) for f in (ap_fmaps + pa_fmaps)]
-    enc_dirs, readout_times = _read_fmap_params(ap_fmaps + pa_fmaps)
-
-    log.info(
-        f"  [{subject} ses-{session}] Topup encoding directions : {enc_dirs}"
-    )
-    log.info(
-        f"  [{subject} ses-{session}] Topup readout times       : {readout_times}"
-    )
-
-    # ------------------------------------------------------------------
-    # Step 1 -- motion-correct each fieldmap (AP and PA separately)
-    # Mirrors hmc_fmaps MapNode in the main pipeline
-    # ------------------------------------------------------------------
-    hmc_fmaps = MapNode(
-        fsl.MCFLIRT(),
-        iterfield=["in_file"],
-        name="topup_hmc_fmaps",
-    )
-    hmc_fmaps.inputs.in_file = all_fmaps
-
-    # ------------------------------------------------------------------
-    # Step 2 -- take mean of each motion-corrected fieldmap
-    # Produces one clean 3D volume per fieldmap file
-    # ------------------------------------------------------------------
-    mean_fmaps = MapNode(
-        fsl.maths.MeanImage(),
-        iterfield=["in_file"],
-        name="topup_mean_fmaps",
-    )
-
-    # ------------------------------------------------------------------
-    # Step 3 -- concatenate mean AP + mean PA into single 4D file
-    # Order: AP (index 1) then PA (index 2) in the encoding file
-    # ------------------------------------------------------------------
-    merge_fmaps = Node(
-        fsl.Merge(dimension="t"),
-        name="topup_merge_fmaps",
-    )
-
-    # ------------------------------------------------------------------
-    # Step 4 -- estimate the field inhomogeneity map
-    # Parameters read directly from JSON sidecars (same as main pipeline)
-    # ------------------------------------------------------------------
-    topup_node = Node(
-        fsl.TOPUP(
-            encoding_direction=enc_dirs,
-            readout_times=readout_times,
-        ),
-        name="topup_estimate",
-    )
-
-    # ------------------------------------------------------------------
-    # Step 5 -- apply the field correction to the raw BOLD
-    #
-    # index=[1]: the BOLD was acquired with AP phase-encoding, which is
-    #   row 1 of the encoding file (AP fieldmaps were listed first above).
-    #   This is a required parameter -- without it FSL does not know which
-    #   correction to apply and will raise an error.
-    #
-    # method='jac': Jacobian modulation -- corrects both geometry and the
-    #   signal intensity changes caused by voxel compression/stretching.
-    #   Mirrors the main pipeline's fixed choice.
-    # ------------------------------------------------------------------
-    applytopup_node = Node(
-        fsl.ApplyTOPUP(
-            in_files=[bold],
-            method="jac",
-            index=[1],          # BOLD = AP = row 1 of encoding file
-        ),
-        name="topup_apply",
-    )
-
-    return hmc_fmaps, mean_fmaps, merge_fmaps, topup_node, applytopup_node
-
-
-# =============================================================================
-# Core per-run workflow  
-# One small new parameter: use_topup (False by default, original unchanged)
-# =============================================================================
-
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
     template_mask, output_dir,
     nipype_work_dir,
-    bids_dir,           # [TOPUP] needed to locate fieldmaps; harmless when unused
-    use_topup = False,  # [TOPUP] off by default -- original behaviour preserved
 ) -> Workflow:
     """
     One Nipype workflow per subject/session/run.
 
-    When use_topup=False (default): identical to the original pipeline.
-    When use_topup=True: an FSL topup + applytopup stage is inserted before
-    the mean_bold node.  The undistorted BOLD then flows into every downstream
-    step that previously received the raw BOLD (mean_bold and apply_mask).
-    Everything else -- backnorm_3d, 4D motion-aware mask, DataSink layout --
-    is completely unchanged.
+    All processing nodes run entirely in nipype_work_dir (node-local scratch).
+    A DataSink node at the end explicitly copies the three final outputs to
+    Lustre output_dir with correct BIDS filenames:
+      - {pfx}_space-native_mask.nii.gz              (3D back-normalised mask)
+      - {pfx}_space-native_desc-mask4d.nii.gz       (4D motion-aware mask)
+      - {pfx}_space-native_desc-maskedbold.nii.gz   (final masked BOLD)
+
+    Using DataSink (rather than hardcoded out_file paths) is the correct
+    Nipype pattern when the work directory and output directory are on
+    different filesystems (scratch vs Lustre).  Hardcoded out_file paths
+    on a different filesystem cause silent failures where the file lands
+    in the scratch work dir and is then deleted at job end.
     """
 
     out_dir = output_func_dir(output_dir, subject, session)
@@ -613,52 +406,12 @@ def build_run_workflow(
     )
 
     # ------------------------------------------------------------------
-    # [TOPUP]  Optional distortion correction  
-    # Builds the topup chain and returns the node whose output replaces
-    # the raw bold path everywhere downstream.
-    # When use_topup=False this block is skipped entirely.
-    # ------------------------------------------------------------------
-    if use_topup:
-        log.info(f"  [{subject} ses-{session} run-{run}] Building topup nodes")
-        (hmc_fmaps,
-         mean_fmaps,
-         merge_fmaps,
-         topup_node,
-         applytopup_node) = _build_topup_nodes(bold, bids_dir, subject, session)
-
-        # Wire the topup chain
-        wf.connect([
-            (hmc_fmaps,      mean_fmaps,      [("out_file",    "in_file")]),
-            (mean_fmaps,     merge_fmaps,     [("out_file",    "in_files")]),
-            (merge_fmaps,    topup_node,      [("merged_file", "in_file")]),
-            (topup_node,     applytopup_node, [
-                ("out_fieldcoef", "in_topup_fieldcoef"),
-                ("out_movpar",    "in_topup_movpar"),
-                ("out_enc_file",  "encoding_file"),
-            ]),
-        ])
-        # Convenience alias: downstream nodes connect from this output
-        bold_source      = applytopup_node
-        bold_source_port = "out_corrected"
-    else:
-        bold_source      = None   # signals: use hardcoded bold path below
-        bold_source_port = None
-
-    # ------------------------------------------------------------------
     # Stage 1A -- mean BOLD  (native EPI reference grid)
-    # If topup is on:  mean of the corrected BOLD
-    # If topup is off: mean of the raw BOLD  (original behaviour)
     # ------------------------------------------------------------------
     mean_bold = Node(
-        fsl.ImageMaths(
-            # only used as the static input when topup is OFF
-            **({"in_file": bold} if not use_topup else {}),
-            op_string="-Tmean",
-        ),
+        fsl.ImageMaths(in_file=bold, op_string="-Tmean"),
         name="mean_bold",
     )
-    if use_topup:
-        wf.connect([(bold_source, mean_bold, [(bold_source_port, "in_file")])])
 
     # ------------------------------------------------------------------
     # Stage 1B -- invert normalization matrix  (template -> native EPI)
@@ -670,6 +423,7 @@ def build_run_workflow(
 
     # ------------------------------------------------------------------
     # Stage 1C -- back-normalize mask to native space (3D)
+    # No out_file here -- DataSink handles the final copy to Lustre
     # ------------------------------------------------------------------
     backnorm_3d = Node(
         fsl.FLIRT(
@@ -696,23 +450,17 @@ def build_run_workflow(
 
     # ------------------------------------------------------------------
     # Stage 2B -- extract individual volumes from BOLD  (MapNode)
-    # When topup is on: extract from the corrected BOLD via a connection
-    # When topup is off: use the hardcoded raw bold path  (original)
     # ------------------------------------------------------------------
     extract_vols = MapNode(
-        fsl.ExtractROI(
-            **({"in_file": bold} if not use_topup else {}),
-            t_size=1,
-        ),
+        fsl.ExtractROI(in_file=bold, t_size=1),
         iterfield = ["t_min"],
         name      = "extract_vols",
     )
     extract_vols.inputs.t_min = list(range(len(mats)))
-    if use_topup:
-        wf.connect([(bold_source, extract_vols, [(bold_source_port, "in_file")])])
 
     # ------------------------------------------------------------------
     # Stage 2C -- apply inv(MAT_t) to 3D mask, ref = vol_t  (MapNode)
+    # All ~400 intermediate 3D masks live entirely in scratch
     # ------------------------------------------------------------------
     per_vol_mask = MapNode(
         fsl.FLIRT(interp="nearestneighbour", apply_xfm=True),
@@ -732,24 +480,33 @@ def build_run_workflow(
     wf.connect([(per_vol_mask, merge_4d, [("out_file", "in_files")])])
 
     # ------------------------------------------------------------------
-    # Stage 3 -- apply 4D mask to BOLD (element-wise multiply)
-    # When topup is on: apply to corrected BOLD
-    # When topup is off: apply to raw BOLD  (original behaviour)
+    # Stage 3 -- apply 4D mask to raw BOLD (element-wise multiply)
+    # No out_file -- DataSink handles the copy to Lustre
     # ------------------------------------------------------------------
     apply_mask = Node(
-        fsl.ApplyMask(
-            **({"in_file": bold} if not use_topup else {}),
-        ),
+        fsl.ApplyMask(in_file=bold),
         name="apply_mask",
     )
-    if use_topup:
-        wf.connect([(bold_source, apply_mask, [(bold_source_port, "in_file")])])
     wf.connect([(merge_4d, apply_mask, [("merged_file", "mask_file")])])
 
     # ------------------------------------------------------------------
-    # Stage 4 -- Rename + DataSink  (unchanged)
+    # Stage 4 -- Rename nodes + DataSink
+    #
+    # FSL and Nipype auto-generate filenames from their inputs, producing
+    # long unpredictable names.  We insert a lightweight Function node
+    # that copies each output to an explicit BIDS filename before handing
+    # it to DataSink.  DataSink then just moves the already-named file
+    # into the correct subdirectory -- no substitution magic needed.
+    #
+    # Output layout under func/:
+    #   mask_native/   {pfx}_space-native_mask.nii.gz
+    #   mask_4d/       {pfx}_space-native_desc-mask4d.nii.gz
+    #   masked_bold/   {pfx}_space-native_desc-maskedbold.nii.gz
     # ------------------------------------------------------------------
+    from nipype.interfaces.utility import Function
+
     def _rename(in_file: str, out_name: str) -> str:
+        """Copy in_file to a sibling path with out_name as filename."""
         import shutil, os
         out_path = os.path.join(os.path.dirname(in_file), out_name)
         shutil.copy(in_file, out_path)
@@ -785,10 +542,12 @@ def build_run_workflow(
         (apply_mask,  rename_bold,   [("out_file",    "in_file")]),
     ])
 
+    # DataSink: dot notation "subdir.@tag" routes file into subdir/
+    # No substitutions needed -- files are already correctly named.
     datasink = Node(DataSink(), name="datasink")
     datasink.inputs.base_directory = str(out_dir)
     datasink.inputs.container      = ""
-    datasink.inputs.substitutions  = []
+    datasink.inputs.substitutions  = []   # no renaming needed
 
     wf.connect([
         (rename_mask3d, datasink, [("out_file", "mask_native.@out")]),
@@ -799,10 +558,6 @@ def build_run_workflow(
     return wf
 
 
-# =============================================================================
-# Batch runner  (one new kwarg: use_topup, passed straight through)
-# =============================================================================
-
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -812,12 +567,12 @@ def run_batch(
     n_procs:         int,
     memory_gb:       float,
 ):
+    """Build and execute a meta-workflow for one batch of runs."""
     nipype_work_dir = str(scratch / "nipype_work")
 
     log.info(
         f"Batch {batch_idx}/{n_batches}: "
         f"{len(batch)} run(s), {n_procs} procs, {memory_gb:.1f} GB RAM"
-        + (f"  [topup ON]" if args.use_topup else "")
     )
 
     meta_wf = Workflow(
@@ -842,13 +597,10 @@ def run_batch(
             template_mask   = args.template_mask,
             output_dir      = args.output_dir,
             nipype_work_dir = nipype_work_dir,
-            bids_dir        = args.bids_dir,   # [TOPUP] needed for fmap lookup
-            use_topup       = args.use_topup,  # [TOPUP] passed through
         )
         meta_wf.add_nodes([run_wf])
-        # [TOPUP] adds ~5 extra nodes per run (hmc, mean, merge, topup, apply)
-        extra = 5 if args.use_topup else 0
-        total_nodes += 8 + 3 * len(mats) + extra
+        # Each run has roughly: 3 Stage-1 nodes + 3 MapNodes (each ~n_vols items) + 2 more
+        total_nodes += 8 + 3 * len(mats)
 
     tracker  = ProgressTracker(total_nodes)
     mem_per_proc = memory_gb / n_procs
@@ -859,39 +611,37 @@ def run_batch(
     meta_wf.run(
         plugin      = "MultiProc",
         plugin_args = {
-            "n_procs":         n_procs,
-            "memory_gb":       memory_gb,
+            "n_procs":      n_procs,
+            "memory_gb":    memory_gb,
             "status_callback": tracker,
         },
     )
 
 
-# =============================================================================
-# Main  (unchanged except passing use_topup through)
-# =============================================================================
-
 def main():
     args = parse_args()
 
-    scratch = setup_scratch()
+    # -- Scratch setup --------------------------------------------------------
+    # scratch = setup_scratch()
+    scratch = Path(args.workingdir) / "scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    log.info(f"Using scratch directory: {scratch}")
 
+    # -- Override nipype_work_dir with scratch unless user specified one -------
     if args.nipype_work_dir is None:
         args.nipype_work_dir = str(scratch / "nipype_work")
     log.info(f"Nipype work dir   : {args.nipype_work_dir}")
 
+    # -- Resolve n_procs and memory_gb ----------------------------------------
     slurm_procs, slurm_mem = detect_slurm_resources()
     n_procs   = args.n_procs   if args.n_procs   is not None else slurm_procs
     memory_gb = args.memory_gb if args.memory_gb is not None else slurm_mem
     log.info(f"Using n_procs={n_procs}, memory_gb={memory_gb:.1f}")
 
-    # [TOPUP] log the mode so it's obvious in SLURM stdout
-    if args.use_topup:
-        log.info("Topup distortion correction: ENABLED")
-    else:
-        log.info("Topup distortion correction: disabled (pass --use_topup to enable)")
-
+    # -- Configure nipype globally --------------------------------------------
     configure_nipype(scratch)
 
+    # -- Discover subjects ----------------------------------------------------
     if args.subjects:
         excluded = [s for s in args.subjects if s in EXCLUDE_SUBS]
         subjects = [s for s in args.subjects if s not in EXCLUDE_SUBS]
@@ -903,11 +653,13 @@ def main():
     log.info(f"Always-excluded: {EXCLUDE_SUBS}")
     log.info(f"Subjects to process: {len(subjects)}")
 
+    # -- Validate all inputs --------------------------------------------------
     ready, skipped = check_all_paths(subjects, args)
     if not ready:
         log.error("No valid subject/session/run combinations found. Exiting.")
         sys.exit(1)
 
+    # -- Split into batches to keep the graph manageable ----------------------
     batch_size = args.batch_size
     batches    = [ready[i:i+batch_size] for i in range(0, len(ready), batch_size)]
     n_batches  = len(batches)
