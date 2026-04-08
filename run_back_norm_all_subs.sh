@@ -45,7 +45,6 @@ echo "Started    : $(date)"
 echo "Topup      : $([ $USE_TOPUP -eq 1 ] && echo 'ENABLED' || echo 'disabled')"
 echo "======================================================================"
 
-
 # -- Verify /tmp is available and has space (NVMe local scratch on these nodes)
 echo "--- /tmp (node-local NVMe scratch) ---"
 df -h /tmp
@@ -77,10 +76,9 @@ PIPELINE="back_norm_all_sub.py"
 # $SLURM_MEM_PER_NODE inside the Python script -- no need to pass explicitly.
 # Override if needed:
 #   python -u "${PIPELINE}" --n_procs 40 --memory_gb 200
-
 # -- Optional subject list from positional args or hardcoded list ------------
-# SUBJECTS=("$@")
-SUBJECTS=("IRN78")           # uncomment to hardcode specific subjects
+SUBJECTS=("$@")
+# SUBJECTS=("IRN78")           # uncomment to hardcode specific subjects
 
 # -- Build the python command -------------------------------------------------
 CMD=(python -u "${PIPELINE}")
@@ -112,5 +110,4 @@ echo "--- /tmp after pipeline ---"
 df -h /tmp
 echo "---------------------------"
 echo "======================================================================"
-
 exit ${EXIT_CODE}
