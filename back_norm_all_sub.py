@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import argparse
 import json
 import re
@@ -568,7 +569,7 @@ def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> 
         fsl.ApplyTOPUP(
             in_files=[bold],
             method="jac",
-            index=[1],          # BOLD = AP = row 1 of encoding file
+            in_index=[1],       # BOLD = AP = row 1 of encoding file
         ),
         name="topup_apply",
     )
@@ -799,6 +800,7 @@ def build_run_workflow(
 # =============================================================================
 # Batch runner  (one new kwarg: use_topup, passed straight through)
 # =============================================================================
+
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -865,6 +867,7 @@ def run_batch(
 # =============================================================================
 # Main  (unchanged except passing use_topup through)
 # =============================================================================
+
 def main():
     args = parse_args()
 
