@@ -58,7 +58,6 @@ DEFAULTS = dict(
 )
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
-
 # =============================================================================
 # Scratch / TMPDIR management
 # =============================================================================
@@ -81,7 +80,6 @@ def setup_scratch() -> Path:
 
     return scratch
 
-
 def _cleanup_scratch():
     if _SCRATCH_DIR and _SCRATCH_DIR.exists():
         log.info(f"Cleaning up scratch: {_SCRATCH_DIR}")
@@ -89,7 +87,6 @@ def _cleanup_scratch():
             shutil.rmtree(_SCRATCH_DIR)
         except Exception as e:
             log.warning(f"Could not remove scratch dir: {e}")
-
 
 def _sigterm_handler(signum, frame):
     log.info("Received SIGTERM -- cleaning up and exiting.")

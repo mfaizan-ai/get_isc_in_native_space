@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=backnorm_pipeline
-#SBATCH --output=logs/backnorm_%j.out
-#SBATCH --error=logs/backnorm_%j.err
+#SBATCH --job-name=backnorm_Schaefer_atlas
+#SBATCH --output=logs/backnorm_scheafer%j.out
+#SBATCH --error=logs/backnorm_scheafer%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=80          # 80 of 96 available cores -- leaves headroom for OS/other users
 #SBATCH --mem=400G                  # ~5 GB/core; nodes have 2 TB so this is conservative
@@ -13,7 +13,7 @@
 # Usage:
 #   sbatch run_backnorm.sh                        # process all subjects
 #   sbatch run_backnorm.sh IRN78 IRC13            # process specific subjects
-#
+
 # Resource guide for this cluster (96-core / 2 TB nodes):
 #   --cpus-per-task : keep at 80 (leaves 16 for OS + other users)
 #   --mem           : ~5 GB per core is safe; 400G for 80 cores
@@ -63,8 +63,8 @@ PIPELINE="back_norm_all_sub.py"   # the new HPC-optimized version
 #   python -u "${PIPELINE}" --n_procs 40 --memory_gb 200
 
 # -- Optional subject list from positional args -------------------------------
-SUBJECTS=("$@")
-# SUBJECTS=("IRN78")
+# SUBJECTS=("$@")
+SUBJECTS=("IRN78")
 
 if [ ${#SUBJECTS[@]} -gt 0 ]; then
     echo "Subjects   : ${SUBJECTS[*]}"
