@@ -7,7 +7,6 @@ import pandas as pd
 from tqdm import tqdm
 
 
-
 def parse_args():
     DEFAULT_BASE = "/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis"
     DEFAULT_CSV  = "per_order_alignment/segments_mapping_each_sub_usable.csv"
@@ -30,7 +29,6 @@ def parse_args():
         help=f"Output directory for ISC .npy files. Default: {DEFAULT_OUT}"
     )
     return parser.parse_args()
-
 
 
 def find_masked_bold(base_dir, subject, session):
