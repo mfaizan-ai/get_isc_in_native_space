@@ -8,9 +8,6 @@ from scipy.stats import pearsonr
 from collections import defaultdict
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PATHS
-# ─────────────────────────────────────────────────────────────────────────────
 BIDS_ROOT  = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DERIV_ROOT = os.path.join(BIDS_ROOT, "derivatives", "faizan_analysis")
 
@@ -30,21 +27,14 @@ MASK_TEMPLATE = os.path.join(
     "{subject}", "ses-{session}", "func", "mask_4d",
     "{subject}_ses-{session}_task-videos_run-{run:03d}_space-native_desc-mask4d.nii.gz"
 )
-
 LABELS_PATH = (
     "/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/"
     "templates/rois/Schaefer2018_400Parcels_7Networks_order.lut"
 )
-
-DEFAULT_CSV = os.path.join(
-    DERIV_ROOT, "per_order_alignment", "segments_mapping_each_sub_usable.csv"
-)
+DEFAULT_CSV = "per_order_alignment/segments_mapping_each_sub_usable.csv"
 DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ARGUMENT PARSING
-# ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -66,10 +56,8 @@ def parse_args():
     return parser.parse_args()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PATH BUILDING  — one place, always explicit
-# ─────────────────────────────────────────────────────────────────────────────
 
+#  PATH BUILDING 
 def build_path(template, subject, session, run):
     """
     Fill a path template for a specific subject / session / run.
@@ -88,10 +76,7 @@ def build_path(template, subject, session, run):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  PREFLIGHT CHECK
-# ─────────────────────────────────────────────────────────────────────────────
-
 def preflight_check(df, bold_template, mask_template):
     """
     Before any heavy computation, resolve every (subject, session, run) pair
@@ -165,10 +150,7 @@ def preflight_check(df, bold_template, mask_template):
     return found, missing
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 #  ATLAS LABELS
-# ─────────────────────────────────────────────────────────────────────────────
-
 def load_lut(lut_path):
     """
     Parse a FreeSurfer-style .lut file.
@@ -195,10 +177,8 @@ def load_lut(lut_path):
     return labels
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ROI EXTRACTION
-# ─────────────────────────────────────────────────────────────────────────────
 
+#  ROI EXTRACTION
 def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400):
     """
     Extract mean BOLD timecourse per ROI for one segment.
@@ -243,10 +223,8 @@ def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400)
     return signal   # (n_rois, T_seg)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  PRE-PROCESSING
-# ─────────────────────────────────────────────────────────────────────────────
 
+#  PRE-PROCESSING
 def mean_centre(signal):
     """Subtract temporal mean per ROI row (NaN-safe)."""
     return signal - np.nanmean(signal, axis=1, keepdims=True)
@@ -280,10 +258,8 @@ def average_segments(segments):
     return np.nanmean(stacked, axis=0)   # (n_rois, T)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ISC  (leave-one-out)
-# ─────────────────────────────────────────────────────────────────────────────
 
+#  ISC  (leave-one-out)
 def loo_isc_single_roi(tc_matrix):
     """
     Leave-one-out ISC for one ROI.
@@ -318,10 +294,8 @@ def loo_isc_single_roi(tc_matrix):
     return isc_vals
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  REPORTING
-# ─────────────────────────────────────────────────────────────────────────────
 
+#  REPORTING
 def print_coverage_table(subject_order_tc, subjects, order_labels):
     print("\n" + "=" * 70)
     print("  SUBJECT × ORDER COVERAGE   ✓(T) = timecourse extracted")
@@ -359,10 +333,6 @@ def print_isc_summary(isc_results, order_labels):
               f"{np.nanmin(roi_mean):.4f}")
     print("=" * 65)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
