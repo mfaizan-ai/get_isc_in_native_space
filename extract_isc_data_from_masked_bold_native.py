@@ -193,7 +193,6 @@ def sanity_check_alignment(isc_out_dir):
     else:
         print(f"\n  {n_failed}/{n_checked} cell(s) FAILED. See details above.\n")
     print("=" * 55)
-
     return all_pass
 
 

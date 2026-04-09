@@ -17,12 +17,11 @@ _RED = ListedColormap([(1, 0, 0, 1)])
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
-    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis",
+    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm",
     bids_dir      = _BIDS_DIR,
     template_mask = (
-        f"{_BIDS_DIR}/derivatives/templates/mask/"
-        "binary_mask_from_julichbrainatlas_3.1_207areas_MPM_MNI152"
-        "_space-nihpd-02-05_2mm.nii.gz"
+        f"{_BIDS_DIR}/derivatives/templates/rois/"
+        "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
     ),
     template_bg   = (
         f"{_BIDS_DIR}/derivatives/templates/mask/"
@@ -53,7 +52,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_dir",      default=DEFAULTS["save_dir"],
                    help="Directory to save all output figures")
     return p.parse_args()
-
 
 def resolve_paths(args) -> dict:
     """

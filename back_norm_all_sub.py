@@ -167,7 +167,6 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 # Path helpers  (originals unchanged)
 # =============================================================================
-
 def bold_path(bids_dir, subject, session, run) -> Path:
     return (
         Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -204,7 +203,6 @@ def output_prefix(subject, session, run) -> str:
 # =============================================================================
 # [TOPUP] path helpers -- new, mirrors main pipeline style
 # =============================================================================
-
 def fmap_paths(bids_dir: str, subject: str, session: str) -> Tuple[List[Path], List[Path]]:
     """
     Return (ap_fmaps, pa_fmaps) for a given subject/session.
@@ -299,7 +297,6 @@ def _read_fmap_params(fmap_files: List[Path]) -> Tuple[List[str], List[float]]:
 # =============================================================================
 # Discovery helpers  (unchanged)
 # =============================================================================
-
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -334,7 +331,6 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
 # =============================================================================
 # Validation
 # =============================================================================
-
 _G = "\033[32m"; _R = "\033[31m"; _Y = "\033[33m"; _E = "\033[0m"
 def _ok(m):   return f"{_G}  OK   {_E}{m}"
 def _miss(m): return f"{_R}  MISS {_E}{m}"
@@ -463,7 +459,6 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
 # =============================================================================
 # Progress tracker  (unchanged)
 # =============================================================================
-
 class ProgressTracker:
     """
     Progress callback for Nipype's MultiProc plugin.
@@ -497,7 +492,6 @@ class ProgressTracker:
 # =============================================================================
 # Nipype configuration  (unchanged)
 # =============================================================================
-
 def configure_nipype(scratch: Path):
     nipype_config.set("execution", "stop_on_first_crash",  "false")
     nipype_config.set("execution", "crashdump_dir",        str(scratch / "crashdumps"))
@@ -512,7 +506,6 @@ def configure_nipype(scratch: Path):
 # =============================================================================
 # [TOPUP] helper nodes -- mirrors the main pipeline's select_fmaps approach
 # =============================================================================
-
 def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> Tuple:
     """
     Build the topup-related nodes and return them ready to be wired into
@@ -619,7 +612,6 @@ def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> 
 # Core per-run workflow  
 # One small new parameter: use_topup (False by default, original unchanged)
 # =============================================================================
-
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
@@ -905,11 +897,12 @@ def run_batch(
 # =============================================================================
 # Main  (unchanged except passing use_topup through)
 # =============================================================================
-
 def main():
     args = parse_args()
 
-    scratch = setup_scratch()
+    # scratch = setup_scratch()
+    # scratch = Path(args.scratch_dir) if args.scratch_dir else setup_scratch()
+    scratch = Path("scratch/") # for debugging
 
     if args.nipype_work_dir is None:
         args.nipype_work_dir = str(scratch / "nipype_work")
