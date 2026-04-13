@@ -258,3 +258,26 @@ As the data is ready, the inter-subject with leave-one-out (LOO) is computed kee
                         --min_subjects 20
 ```
 ![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/isc_results/isc_summary_plot.png)
+
+in this repo, there is an option to backnormalize the schaefer atlas, which can be done with the same script as the v1 mask:
+```bash
+sbatch run_back_norm_all_subs.sh
+```
+
+With some keys changes, as the atlas have multiple labels around 400 labels. 
+```USE_TOPUP=1``` set topup to 1 to use the magnetic field distortion correction i.e, top-up correction to the bold raw data. 
+and in the ```back_norm_all_sub.py``` the ```template_schaefer_atlas``` path to schafer atlas is used to backnormalize the atlas. 
+
+After backnormalizing from the template space to run space, the time-course can be extracted and data can be used for inter subject correlation calculation. 
+
+```
+python isc_schaefer.py  #default
+
+python isc_schaefer.py --csv path/to/file.csv
+                       --out_dir path/to/out_dir
+                       --mask_template path/to/tempalte_mask # schaefer mask
+                       --labels path/to/atlas_labels.lut
+                       --n_rois 400
+                       --nan_policy drop 
+
+``` 
