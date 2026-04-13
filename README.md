@@ -281,3 +281,7 @@ python isc_schaefer.py --csv path/to/file.csv
                        --nan_policy drop 
 
 ``` 
+if we run the visualization script for hte last step data we generated for ISC, we will get following figures that showns the intersubject correlation among brain networks 
+with respect to the video order the subjects watched. 
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/heatmap.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/network_summary.png)
