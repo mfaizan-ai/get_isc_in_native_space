@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=backnorm_schaefer_with_topup
-#SBATCH --output=logs/backnorm_schaefer_topup%j.out
-#SBATCH --error=logs/backnorm_schaefer_topup%j.err
+#SBATCH --job-name=backnorm_schaefer_atlas 
+#SBATCH --output=logs/backnorm_schaefer_testcase%j.out
+#SBATCH --error=logs/backnorm_schaefer_testcase%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=80          # 80 of 96 available cores -- leaves headroom for OS/other users
 #SBATCH --mem=400G                  # ~5 GB/core; nodes have 2 TB so this is conservative
@@ -105,7 +105,7 @@ EXIT_CODE=$?
 echo "======================================================================"
 echo "Finished   : $(date)"
 echo "Exit code  : ${EXIT_CODE}"
-echo "Outputs    : derivatives/faizan_analysis/schaefer_backnorm/"
+echo "Outputs    : derivatives/faizan_analysis/schaefer_backnorm/test_case"
 echo "--- /tmp after pipeline ---"
 df -h /tmp
 echo "---------------------------"

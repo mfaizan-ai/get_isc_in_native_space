@@ -13,7 +13,6 @@ Usage
 -----
   python visualise_isc.py --isc_dir /path/to/isc_schaefer --out_dir ./figures
 """
-
 import os
 import argparse
 import glob

@@ -38,7 +38,7 @@ DEFAULTS = dict(
     mcflirt_mats_dir      = f"{_BIDS_DIR}/derivatives/motion_affines/mcflirt_mats_output",
     template_schaefer_atlas = (
         f"{_BIDS_DIR}/derivatives/templates/rois/"
-        "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+        "Schaefer2018_400Parcels_7Networks_order_space-nihpd-02-05_2mm.nii.gz"
     ),
     # Outputs go into faizan_analysis/schaefer_backnorm/ to keep Schaefer
     # results separate from any other back-normalisation runs
@@ -50,7 +50,7 @@ DEFAULTS = dict(
     # -------------------------------------------------------------------------
     # [TOPUP] defaults -- only used when --use_topup is passed
     # -------------------------------------------------------------------------
-    use_topup       = False,  # off by default; existing runs unaffected
+    use_topup       = True,  # off by default; existing runs unaffected
 )
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
@@ -900,9 +900,9 @@ def run_batch(
 def main():
     args = parse_args()
 
-    # scratch = setup_scratch()
+    scratch = setup_scratch()
     # scratch = Path(args.scratch_dir) if args.scratch_dir else setup_scratch()
-    scratch = Path("scratch/") # for debugging
+    # scratch = Path("scratch/") # for debugging
 
     if args.nipype_work_dir is None:
         args.nipype_work_dir = str(scratch / "nipype_work")

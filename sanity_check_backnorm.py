@@ -17,11 +17,11 @@ _RED = ListedColormap([(1, 0, 0, 1)])
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
-    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm",
+    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm/test_case",
     bids_dir      = _BIDS_DIR,
     template_mask = (
         f"{_BIDS_DIR}/derivatives/templates/rois/"
-        "Schaefer2018_400Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+        "Schaefer2018_400Parcels_7Networks_order_space-nihpd-02-05_2mm.nii.gz"
     ),
     template_bg   = (
         f"{_BIDS_DIR}/derivatives/templates/mask/"
@@ -158,7 +158,6 @@ def percentile_clim(data, lo=2, hi=98):
     if nonzero.size == 0:
         return 0, 1
     return float(np.percentile(nonzero, lo)), float(np.percentile(nonzero, hi))
-
 
 def axial_slices_with_mask(bg, mask, n=9):
     """Pick n axial slices that contain mask voxels."""

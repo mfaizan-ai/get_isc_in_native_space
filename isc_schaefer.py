@@ -7,8 +7,6 @@ from tqdm import tqdm
 from scipy.stats import pearsonr
 from collections import defaultdict
 
-
-
 BIDS_ROOT  = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DERIV_ROOT = os.path.join(BIDS_ROOT, "derivatives", "faizan_analysis")
 
