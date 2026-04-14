@@ -261,7 +261,28 @@ As the data is ready, the inter-subject with leave-one-out (LOO) is computed kee
 
 ### Analyzing the Schaefer Atlas 
 in this repo, there is an option to backnormalize the schaefer atlas, which can be done with the same script as the v1 mask:
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/heatmap.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/methods/methods_figure.png)
+
+- A cortical parcellation atlas that divides the brain surface into discrete regions of interest
+  (ROIs), available in resolutions from 100 to 1000 parcels — this pipeline uses the ```400-parcel version```.
+ 
+- Each parcel is assigned to one of 7 canonical resting-state networks (Yeo 7-Networks): ```Visual```,
+  ```Somatomotor```, ```Dorsal Attention```, ```Salience/Ventral Attention```, ```Limbic```, ```Frontoparietal Control```,
+  and ```Default Mode```.
+ 
+- Parcels are further split by hemisphere (LH/RH), giving a naming convention of
+  ```7Networks_{Hemi}_{Network}_{Index}``` (e.g. 7Networks_LH_Default_1).
+ 
+- Atlas labels are provided via a ```.lut``` (lookup table) file mapping each integer parcel ID (1-400)
+  to its full network name.
+ 
+- Originally defined in ```MNI standard space```; this pipeline uses a back-projected native-space version
+  of the atlas per subject, so ROI boundaries respect each individual's anatomy.
+ 
+- The 4D mask files used here extend the atlas into the temporal dimension, allowing motion-censored
+  timepoints to be excluded on a TR-by-TR basis while preserving the spatial ROI assignments.
+ 
+
 
 ```bash
 sbatch run_back_norm_all_subs.sh
