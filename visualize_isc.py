@@ -25,7 +25,7 @@ from matplotlib.colors import TwoSlopeNorm
 import seaborn as sns
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-
+# /lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis/isc_schaefer
 # Default paths 
 DEFAULT_ISC_DIR = (
     "/lustre/disk/home/shared/cusacklab/foundcog/bids/"

@@ -73,8 +73,7 @@ def build_path(template, subject, session, run):
         session=int(session),
         run=int(run)
     )
-
-
+    
 def preflight_check(df, bold_template, mask_template):
     """
     Before any heavy computation, resolve every (subject, session, run) pair
@@ -146,7 +145,6 @@ def preflight_check(df, bold_template, mask_template):
         )
 
     return found, missing
-
 
 def load_lut(lut_path):
     """
@@ -257,7 +255,7 @@ def average_segments(segments):
 
 
 
-#  ISC  (leave-one-out)
+#  ISC (leave-one-out)
 def loo_isc_single_roi(tc_matrix):
     """
     Leave-one-out ISC for one ROI.
@@ -290,7 +288,7 @@ def loo_isc_single_roi(tc_matrix):
         isc_vals[s] = r
 
     return isc_vals
-
+ 
 
 def print_coverage_table(subject_order_tc, subjects, order_labels):
     print("\n" + "=" * 70)
@@ -340,7 +338,7 @@ def main():
     for k, v in vars(args).items():
         print(f"  {k:<18}: {v}")
     print("=" * 65)
-
+    
     # ── 1. Load & filter CSV ──────────────────────────────────────────────────
     df = pd.read_csv(args.csv)
     df = df[~df["skip"].astype(bool) & ~df["short_segment"].astype(bool)].copy()
@@ -455,7 +453,6 @@ def main():
         # Without this, every loaded 4D file stays in RAM for the entire job,
         # which would exhaust memory across 100+ subjects.
         del file_cache
-
     print_coverage_table(subject_order_tc, subjects, order_labels)
 
     # ── 5. LOO-ISC per order ──────────────────────────────────────────────────
@@ -540,7 +537,6 @@ def main():
 
     print_isc_summary(isc_results, order_labels)
     print(f"\n[DONE] Output in: {args.out_dir}\n")
-
 
 if __name__ == "__main__":
     main()
