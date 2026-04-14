@@ -307,5 +307,11 @@ python isc_schaefer.py --csv path/to/file.csv
 ``` 
 if we run the visualization script for hte last step data we generated for ISC, we will get following figures that showns the intersubject correlation among brain networks 
 with respect to the video order the subjects watched. 
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/heatmap.png)
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/network_summary.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/isc_scheafer_infants/heatmap.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/isc_scheafer_infants/brain_order-A.png)
+
+
+### References
+[1]. Schaefer et al. (2018). Local-Global Parcellation of the Human Cerebral Cortex from Intrinsic
+  Functional Connectivity MRI. Cerebral Cortex, 28(9), 3095-3114.
+ 
