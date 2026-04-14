@@ -257,7 +257,6 @@ As the data is ready, the inter-subject with leave-one-out (LOO) is computed kee
                         --out_dir /path/to/results \\
                         --min_subjects 20
 ```
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/isc_results/isc_summary_plot.png)
 
 ### Analyzing the Schaefer Atlas 
 in this repo, there is an option to backnormalize the schaefer atlas, which can be done with the same script as the v1 mask:
