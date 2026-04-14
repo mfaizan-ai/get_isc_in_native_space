@@ -259,7 +259,10 @@ As the data is ready, the inter-subject with leave-one-out (LOO) is computed kee
 ```
 ![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/isc_results/isc_summary_plot.png)
 
+### Analyzing the Schaefer Atlas 
 in this repo, there is an option to backnormalize the schaefer atlas, which can be done with the same script as the v1 mask:
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/scheafer_atlas_figs/figures/heatmap.png)
+
 ```bash
 sbatch run_back_norm_all_subs.sh
 ```
