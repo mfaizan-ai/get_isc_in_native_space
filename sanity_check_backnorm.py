@@ -17,7 +17,7 @@ _RED = ListedColormap([(1, 0, 0, 1)])
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 
 DEFAULTS = dict(
-    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm/test_case",
+    output_dir    = f"{_BIDS_DIR}/derivatives/faizan_analysis/schaefer_backnorm",
     bids_dir      = _BIDS_DIR,
     template_mask = (
         f"{_BIDS_DIR}/derivatives/templates/rois/"
