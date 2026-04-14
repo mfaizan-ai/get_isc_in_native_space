@@ -10,17 +10,12 @@ from collections import defaultdict
 BIDS_ROOT  = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DERIV_ROOT = os.path.join(BIDS_ROOT, "derivatives", "faizan_analysis")
 
-# Raw BOLD
-# .../bids/sub-IRN78/ses-1/func/sub-IRN78_ses-1_task-videos_dir-AP_run-001_bold.nii.gz
 BOLD_TEMPLATE = os.path.join(
     BIDS_ROOT,
     "{subject}", "ses-{session}", "func",
     "{subject}_ses-{session}_task-videos_dir-AP_run-{run:03d}_bold.nii.gz"
 )
 
-# 4-D Schaefer mask
-# .../schaefer_backnorm/sub-IRN78/ses-1/func/mask_4d/
-#     sub-IRN78_ses-1_task-videos_run-001_space-native_desc-mask4d.nii.gz
 MASK_TEMPLATE = os.path.join(
     DERIV_ROOT, "schaefer_backnorm",
     "{subject}", "ses-{session}", "func", "mask_4d",
@@ -33,61 +28,41 @@ LABELS_PATH = (
 )
 
 DEFAULT_CSV = "per_order_alignment/segments_mapping_each_sub_usable.csv"
-DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer")
+DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis")
+
+# Canonical Yeo 7-network order (used to sort the 7×7 matrix rows/columns)
+NETWORK_ORDER = ["Vis", "SomMot", "DorsAttn", "SalVentAttn", "Limbic", "Cont", "Default"]
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Per-ROI ISC using Schaefer atlas and 4D motion-aware masks."
+        description="Per-ROI and cross-network ISC using Schaefer atlas and 4D masks."
     )
     parser.add_argument("--csv",           default=DEFAULT_CSV)
     parser.add_argument("--out_dir",       default=DEFAULT_OUT)
-    parser.add_argument("--bold_template", default=BOLD_TEMPLATE,
-        help="Path template. Placeholders: {subject} {session} {run}")
-    parser.add_argument("--mask_template", default=MASK_TEMPLATE,
-        help="Path template for 4D Schaefer mask. Same placeholders.")
-    parser.add_argument("--labels",        default=LABELS_PATH,
-        help="Schaefer .lut file: id  R  G  B  name")
+    parser.add_argument("--bold_template", default=BOLD_TEMPLATE)
+    parser.add_argument("--mask_template", default=MASK_TEMPLATE)
+    parser.add_argument("--labels",        default=LABELS_PATH)
     parser.add_argument("--n_rois",        type=int, default=400)
     parser.add_argument("--nan_policy",    default="drop",
-        choices=["drop", "interpolate"],
-        help="'drop' = intersect valid timepoints across subjects (default). "
-             "'interpolate' = linear interpolation per ROI.")
+        choices=["drop", "interpolate"])
     return parser.parse_args()
 
 
-
+# ── Path helpers ──────────────────────────────────────────────────────────────
 def build_path(template, subject, session, run):
-    """
-    Fill a path template for a specific subject / session / run.
-
-    subject  : str   e.g. "sub-IRN78"   (must already have sub- prefix)
-    session  : int   e.g. 1
-    run      : int   e.g. 1  →  formatted as 001 via {run:03d} in template
-
-    Called once for BOLD and once for mask — both share the same signature
-    so there is no risk of mixing up arguments between the two.
-    """
     return template.format(
         subject=str(subject),
         session=int(session),
         run=int(run)
     )
-    
-def preflight_check(df, bold_template, mask_template):
-    """
-    Before any heavy computation, resolve every (subject, session, run) pair
-    in the CSV and report which files exist and which are missing.
 
-    Prints a summary table and returns:
-        found    : set of (subject, session, run) tuples where BOTH files exist
-        missing  : list of (path, kind) for files not found
-    """
+
+def preflight_check(df, bold_template, mask_template):
     print("\n" + "=" * 70)
     print("  PREFLIGHT — checking all (subject, session, run) file pairs")
     print("=" * 70)
 
-    # Unique combinations in the CSV
     combos = (
         df[["subject", "session", "run"]]
         .drop_duplicates()
@@ -101,13 +76,10 @@ def preflight_check(df, bold_template, mask_template):
         sub = row["subject"]
         ses = int(row["session"])
         run = int(row["run"])
-
         bold_path = build_path(bold_template, sub, ses, run)
         mask_path = build_path(mask_template, sub, ses, run)
-
         bold_ok = os.path.exists(bold_path)
         mask_ok = os.path.exists(mask_path)
-
         if bold_ok and mask_ok:
             found.add((sub, ses, run))
         else:
@@ -129,14 +101,6 @@ def preflight_check(df, bold_template, mask_template):
         if len(missing) > 15:
             print(f"    ... and {len(missing) - 15} more.")
 
-        # Show an example of what a resolved path looks like for the
-        # first row, so the user can spot template mistakes immediately
-        first = combos.iloc[0]
-        print(f"\n  Example resolved BOLD path (first CSV row):")
-        print(f"    {build_path(bold_template, first['subject'], first['session'], first['run'])}")
-        print(f"  Example resolved MASK path:")
-        print(f"    {build_path(mask_template, first['subject'], first['session'], first['run'])}")
-
     print("=" * 70)
 
     if n_found == 0:
@@ -146,13 +110,10 @@ def preflight_check(df, bold_template, mask_template):
 
     return found, missing
 
+
+# ── Atlas helpers ─────────────────────────────────────────────────────────────
 def load_lut(lut_path):
-    """
-    Parse a FreeSurfer-style .lut file.
-    Format per line:  id   R   G   B   name
-    e.g.:             1  0.47059  0.066667  0.50196  7Networks_LH_Vis_1
-    Returns dict {roi_id (int): roi_name (str)}.
-    """
+    """Parse Schaefer .lut → dict {roi_id (int): roi_name (str)}."""
     labels = {}
     if not os.path.exists(lut_path):
         print(f"[WARN] LUT not found: {lut_path}. ROIs labelled numerically.")
@@ -171,6 +132,57 @@ def load_lut(lut_path):
     print(f"[INFO] Loaded {len(labels)} ROI labels.")
     return labels
 
+
+def get_network_from_label(roi_name):
+    """
+    Extract the network name from a Schaefer ROI label.
+
+    Label format:  7Networks_{Hemi}_{Network}_{Index}
+    Examples:
+        '7Networks_LH_Vis_1'        → 'Vis'
+        '7Networks_RH_Default_1'    → 'Default'
+        '7Networks_LH_SalVentAttn_2'→ 'SalVentAttn'
+
+    Returns 'Unknown' if the label cannot be parsed.
+    """
+    parts = roi_name.split("_")
+    # parts[0]='7Networks', parts[1]=hemi, parts[2]=network, parts[3]=index
+    if len(parts) >= 3:
+        return parts[2]
+    return "Unknown"
+
+
+def build_network_roi_map(roi_names):
+    """
+    Group ROI indices (0-based) by network name.
+
+    Parameters
+    ----------
+    roi_names : list of str  length n_rois
+
+    Returns
+    -------
+    ordered dict  {network_name: np.ndarray of 0-based ROI indices}
+    sorted by NETWORK_ORDER; any unrecognised networks appended at the end.
+    """
+    net_map = defaultdict(list)
+    for idx, name in enumerate(roi_names):
+        net = get_network_from_label(name)
+        net_map[net].append(idx)
+
+    ordered = {}
+    for net in NETWORK_ORDER:
+        if net in net_map:
+            ordered[net] = np.array(net_map[net])
+    for net in net_map:        # catch any unlabelled / unexpected networks
+        if net not in ordered:
+            ordered[net] = np.array(net_map[net])
+
+    return ordered
+
+
+# ── ROI-level timecourse extraction ──────────────────────────────────────────
+
 def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400):
     """
     Extract mean BOLD timecourse per ROI for one segment.
@@ -178,17 +190,7 @@ def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400)
     The mask is 4-D (X, Y, Z, T): each timepoint independently maps voxels
     to ROI labels, so motion censoring is respected per TR.
 
-    Parameters
-    ----------
-    bold_data  : np.ndarray (X, Y, Z, T_full)
-    mask_data  : np.ndarray (X, Y, Z, T_full)  integer labels 0..n_rois
-    start_idx  : int  inclusive
-    end_idx    : int  exclusive
-
-    Returns
-    -------
-    signal : np.ndarray (n_rois, T_seg)
-        NaN where an ROI has no valid voxels at a given timepoint.
+    Returns  signal : (n_rois, T_seg)  — NaN where ROI has no valid voxels.
     """
     n_vols  = bold_data.shape[-1]
     end_idx = min(end_idx, n_vols)
@@ -199,23 +201,19 @@ def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400)
     mask_seg  = mask_data[:, :, :, start_idx:end_idx]
     T         = bold_seg.shape[-1]
 
-    # Flatten spatial dims → 1-D per timepoint
-    bold_flat = bold_seg.reshape(-1, T).astype(np.float64)   # (n_vox, T)
-    mask_flat = mask_seg.reshape(-1, T).astype(np.int32)     # (n_vox, T)
+    bold_flat = bold_seg.reshape(-1, T).astype(np.float64)
+    mask_flat = mask_seg.reshape(-1, T).astype(np.int32)
 
     signal = np.full((n_rois, T), np.nan, dtype=np.float32)
 
-    # Loop over T timepoints (e.g. 50-150) instead of 400 ROIs.
-    # np.bincount does a single optimised C pass over a 1-D array —
-    # far faster than creating a large boolean (n_vox, T) mask 400 times.
     for t in range(T):
-        m      = mask_flat[:, t]                          # (n_vox,)
-        b      = bold_flat[:, t]                          # (n_vox,)
-        counts = np.bincount(m, minlength=n_rois + 1)    # (n_rois+1,)
+        m      = mask_flat[:, t]
+        b      = bold_flat[:, t]
+        counts = np.bincount(m, minlength=n_rois + 1)
         sums   = np.bincount(m, weights=b, minlength=n_rois + 1)
-        c = counts[1:n_rois + 1]                         # drop label-0 background
-        s = sums  [1:n_rois + 1]
-        valid = c > 0
+        c      = counts[1:n_rois + 1]
+        s      = sums  [1:n_rois + 1]
+        valid  = c > 0
         signal[valid, t] = (s[valid] / c[valid]).astype(np.float32)
 
     return signal   # (n_rois, T_seg)
@@ -227,7 +225,7 @@ def mean_centre(signal):
 
 
 def interpolate_nans(signal):
-    """Linear interpolation of NaN timepoints per ROI. Entirely-NaN rows stay NaN."""
+    """Linear interpolation of NaN timepoints per ROI."""
     out = signal.copy()
     for r in range(signal.shape[0]):
         ts   = signal[r]
@@ -240,13 +238,7 @@ def interpolate_nans(signal):
 
 
 def average_segments(segments):
-    """
-    Average a list of (n_rois, T) arrays across the list axis.
-    Truncates to min T if lengths differ (shouldn't happen within same
-    segment_num but handled defensively).
-    Uses nanmean so a motion-censored timepoint in one repetition does not
-    destroy the average if other repetitions are valid.
-    """
+    """nanmean a list of (n_rois, T) arrays along the list axis."""
     if not segments:
         return None
     min_T   = min(s.shape[1] for s in segments)
@@ -254,21 +246,38 @@ def average_segments(segments):
     return np.nanmean(stacked, axis=0)   # (n_rois, T)
 
 
+# ── Network-level timecourse ──────────────────────────────────────────────────
 
-#  ISC (leave-one-out)
+def roi_to_network_timecourses(roi_tc, network_roi_map):
+    """
+    Average ROI timecourses within each network.
+
+    Parameters
+    ----------
+    roi_tc          : np.ndarray (n_rois, T)
+    network_roi_map : dict {network_name: 0-based ROI indices}
+
+    Returns
+    -------
+    net_tc_array : np.ndarray (n_networks, T)
+        Row order follows network_roi_map key order.
+    networks     : list of str
+    """
+    networks = list(network_roi_map.keys())
+    net_tc_array = np.stack(
+        [np.nanmean(roi_tc[indices, :], axis=0) for indices in network_roi_map.values()],
+        axis=0
+    )   # (n_networks, T)
+    return net_tc_array, networks
+
+
+# ── ISC functions ─────────────────────────────────────────────────────────────
 def loo_isc_single_roi(tc_matrix):
     """
-    Leave-one-out ISC for one ROI.
+    Standard LOO-ISC for one ROI (or one network timecourse).
 
     tc_matrix : (n_subjects, T)
-
-    For each subject s:
-        others_mean = mean of all other subjects at each timepoint
-        isc[s]      = pearson_r(subject_s, others_mean)
-
-    NaN policy: only timepoints valid for ALL subjects are used.
-
-    Returns (n_subjects,) float32. NaN where correlation cannot be computed.
+    Returns   : (n_subjects,) float32
     """
     n_subs, _ = tc_matrix.shape
     isc_vals  = np.full(n_subs, np.nan, dtype=np.float32)
@@ -288,7 +297,54 @@ def loo_isc_single_roi(tc_matrix):
         isc_vals[s] = r
 
     return isc_vals
- 
+
+
+def loo_cross_network_isc(tc_a_stack, tc_b_stack):
+    """
+    Leave-one-out cross-network ISC.
+
+    For each subject i:
+        others_mean_B = mean( tc_b_stack[j]  for j != i )
+        isc[i]        = pearsonr( tc_a_stack[i],  others_mean_B )
+
+    When tc_a_stack == tc_b_stack this reduces to the standard LOO-ISC.
+
+    Parameters
+    ----------
+    tc_a_stack : (n_subs, T)  — network A timecourse per subject
+    tc_b_stack : (n_subs, T)  — network B timecourse per subject
+
+    Returns
+    -------
+    isc_vals : (n_subs,) float32
+    """
+    n_subs = tc_a_stack.shape[0]
+    isc_vals = np.full(n_subs, np.nan, dtype=np.float32)
+
+    # Timepoints must be valid for ALL subjects in BOTH networks
+    valid_mask = (
+        np.all(~np.isnan(tc_a_stack), axis=0) &
+        np.all(~np.isnan(tc_b_stack), axis=0)
+    )
+    if valid_mask.sum() < 3:
+        return isc_vals
+
+    tc_a_valid = tc_a_stack[:, valid_mask].astype(np.float64)
+    tc_b_valid = tc_b_stack[:, valid_mask].astype(np.float64)
+    total_b    = tc_b_valid.sum(axis=0)
+
+    for s in range(n_subs):
+        others_b = (total_b - tc_b_valid[s]) / (n_subs - 1)
+        a_s      = tc_a_valid[s]
+        if np.std(a_s) < 1e-10 or np.std(others_b) < 1e-10:
+            continue
+        r, _        = pearsonr(a_s, others_b)
+        isc_vals[s] = r
+
+    return isc_vals
+
+
+# ── Printing helpers ──────────────────────────────────────────────────────────
 
 def print_coverage_table(subject_order_tc, subjects, order_labels):
     print("\n" + "=" * 70)
@@ -311,7 +367,7 @@ def print_coverage_table(subject_order_tc, subjects, order_labels):
 
 def print_isc_summary(isc_results, order_labels):
     print("\n" + "=" * 65)
-    print("  ISC SUMMARY")
+    print("  PER-ROI ISC SUMMARY")
     print("=" * 65)
     print(f"  {'Order':<8} {'N Subs':<8} {'Mean ISC':<12} {'Max ROI':<12} {'Min ROI'}")
     print("  " + "-" * 55)
@@ -328,23 +384,35 @@ def print_isc_summary(isc_results, order_labels):
     print("=" * 65)
 
 
+def print_cross_isc_matrix(mean_mat, networks, order):
+    """Pretty-print the 7×7 cross-network ISC matrix to the terminal."""
+    n = len(networks)
+    col_w = 10
+    print(f"\n  Cross-network ISC — order {order}  (mean over subjects)")
+    print("  " + " " * 12 + "".join(f"{net:>{col_w}}" for net in networks))
+    print("  " + "-" * (12 + col_w * n))
+    for i, net_a in enumerate(networks):
+        row_vals = "".join(f"{mean_mat[i, j]:>{col_w}.4f}" for j in range(n))
+        print(f"  {net_a:<12}{row_vals}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
     print("=" * 65)
-    print("  ISC — Schaefer 400-ROI Atlas, LOO method")
+    print("  ISC — Schaefer 400-ROI + 7-Network cross-ISC, LOO method")
     print("=" * 65)
     for k, v in vars(args).items():
         print(f"  {k:<18}: {v}")
     print("=" * 65)
-    
+
     # ── 1. Load & filter CSV ──────────────────────────────────────────────────
     df = pd.read_csv(args.csv)
     df = df[~df["skip"].astype(bool) & ~df["short_segment"].astype(bool)].copy()
 
-    # Normalise subject column: always keep the "sub-" prefix so it matches
-    # the filesystem directory names exactly (e.g. sub-IRN78, sub-ICC103A)
     df["subject"] = df["subject"].astype(str).apply(
         lambda s: s if s.startswith("sub-") else f"sub-{s}"
     )
@@ -362,58 +430,56 @@ def main():
     print(f"[INFO] Orders         : {order_labels}")
     print(f"[INFO] ROIs           : {n_rois}")
 
-    # ── 2. Preflight: validate all paths before any heavy computation ─────────
+    # ── 2. Preflight ──────────────────────────────────────────────────────────
     valid_pairs, _ = preflight_check(df, args.bold_template, args.mask_template)
-    # valid_pairs is a set of (subject, session, run) tuples where both files exist
 
-    # ── 3. Atlas labels ───────────────────────────────────────────────────────
+    # ── 3. Atlas labels & network map ─────────────────────────────────────────
     labels    = load_lut(args.labels)
     roi_names = [labels.get(r, f"ROI_{r}") for r in range(1, n_rois + 1)]
 
-    # ── 4. Extract & average ROI timecourses ──────────────────────────────────
-    #
-    # Strategy:
-    #   For each subject (outer loop):
-    #     Load NIfTI files for this subject's runs into a small per-subject cache.
-    #     For each (order, segment_num): collect timecourses across all valid rows.
-    #     Average repetitions within the same segment_num (handles variable rep counts).
-    #     Concatenate averaged segments in ascending segment_num order.
-    #     → subject_order_tc[subject][order] = (n_rois, T_total)
-    #     Clear the per-subject cache before moving to the next subject
-    #     so memory never accumulates across subjects.
+    network_roi_map = build_network_roi_map(roi_names)
+    networks        = list(network_roi_map.keys())
+    n_networks      = len(networks)
 
-    subject_order_tc = defaultdict(dict)
+    print(f"\n[INFO] Networks ({n_networks}): {networks}")
+    print(f"[INFO] ROIs per network:")
+    for net, idx in network_roi_map.items():
+        print(f"         {net:<14}: {len(idx)} ROIs")
+
+    # ── 4. Extract & average ROI timecourses per subject ──────────────────────
+    #
+    # subject_order_tc[subject][order] = (n_rois, T_total)
+    #
+    # After extraction we also compute network-averaged timecourses:
+    # subject_order_net_tc[subject][order] = (n_networks, T_total)
+
+    subject_order_tc     = defaultdict(dict)
+    subject_order_net_tc = defaultdict(dict)
 
     for subject in tqdm(subjects, desc="Subjects", ncols=80):
 
-        # Per-subject file cache: cleared at the end of this subject's loop.
-        # Keyed by (bold_path, mask_path) so the same run file is loaded
-        # only once even if multiple segments / orders reference it.
         file_cache = {}
-
-        sub_df = df[df["subject"] == subject]
+        sub_df     = df[df["subject"] == subject]
 
         for order in order_labels:
             ord_df = sub_df[sub_df["order_label"] == order]
             if ord_df.empty:
                 continue
 
-            seg_timecourses = defaultdict(list)   # seg_num → list of (n_rois, T_seg)
+            seg_timecourses = defaultdict(list)
 
             for _, row in ord_df.iterrows():
-                sub = row["subject"]   # always == subject (same filter)
+                sub = row["subject"]
                 ses = int(row["session"])
                 run = int(row["run"])
 
-                # Skip rows whose files did not pass the preflight check
                 if (sub, ses, run) not in valid_pairs:
                     continue
 
                 bold_path = build_path(args.bold_template, sub, ses, run)
                 mask_path = build_path(args.mask_template, sub, ses, run)
-
-                # Load into per-subject cache if not already loaded
                 cache_key = (bold_path, mask_path)
+
                 if cache_key not in file_cache:
                     tqdm.write(f"  [LOAD] {sub}  ses-{ses}  run-{run:03d}")
                     file_cache[cache_key] = (
@@ -444,18 +510,22 @@ def main():
             if seg_timecourses:
                 averaged = {k: average_segments(v)
                             for k, v in seg_timecourses.items()}
-                full_tc  = np.concatenate(
+                full_roi_tc = np.concatenate(
                     [averaged[k] for k in sorted(averaged)], axis=1
                 )   # (n_rois, T_total)
-                subject_order_tc[subject][order] = full_tc
+                subject_order_tc[subject][order] = full_roi_tc
 
-        # ── Clear this subject's NIfTI cache before moving on ─────────────────
-        # Without this, every loaded 4D file stays in RAM for the entire job,
-        # which would exhaust memory across 100+ subjects.
+                # ── Network-level average ─────────────────────────────────
+                # Average across ROIs within each of the 7 networks.
+                # NaN-safe so motion-censored ROIs don't inflate the average.
+                net_tc, _ = roi_to_network_timecourses(full_roi_tc, network_roi_map)
+                subject_order_net_tc[subject][order] = net_tc  # (n_networks, T_total)
+
         del file_cache
+
     print_coverage_table(subject_order_tc, subjects, order_labels)
 
-    # ── 5. LOO-ISC per order ──────────────────────────────────────────────────
+    # ── 5a. LOO-ISC per ROI ───────────────────────────────────────────────────
     isc_results  = {}
     isc_subjects = {}
 
@@ -463,27 +533,15 @@ def main():
         subs_with_order = [s for s in subjects if order in subject_order_tc[s]]
 
         if len(subs_with_order) < 2:
-            print(f"\n[WARN] Order {order}: {len(subs_with_order)} subject(s) — "
-                  "skipping ISC (need ≥ 2).")
+            print(f"\n[WARN] Order {order}: {len(subs_with_order)} subject(s) — skipping.")
             continue
 
-        # Verify / harmonise temporal lengths
         lengths   = {s: subject_order_tc[s][order].shape[1] for s in subs_with_order}
-        unique_Ts = set(lengths.values())
-        if len(unique_Ts) > 1:
-            print(f"\n[WARN] Order {order}: temporal length mismatch:")
-            for s, T in sorted(lengths.items()):
-                print(f"         {s}: T={T}")
-            min_T = min(unique_Ts)
-            print(f"       Truncating all to T={min_T}.")
-        else:
-            min_T = next(iter(unique_Ts))
+        min_T     = min(lengths.values())
 
-        # Stack → (n_subs, n_rois, T)
         tc_stack = np.stack(
-            [subject_order_tc[s][order][:, :min_T] for s in subs_with_order],
-            axis=0
-        )
+            [subject_order_tc[s][order][:, :min_T] for s in subs_with_order], axis=0
+        )   # (n_subs, n_rois, T)
 
         n_subs_ord = len(subs_with_order)
         isc_mat    = np.full((n_subs_ord, n_rois), np.nan, dtype=np.float32)
@@ -495,9 +553,68 @@ def main():
 
         isc_results[order]  = isc_mat
         isc_subjects[order] = subs_with_order
-        print(f"[INFO] Order {order}: ISC done — shape {isc_mat.shape}")
+        print(f"[INFO] Per-ROI ISC order-{order}: shape {isc_mat.shape}")
 
-    # ── 6. Save ───────────────────────────────────────────────────────────────
+    # ── 5b. Cross-network LOO-ISC  (7 × 7 matrix) ────────────────────────────
+    #
+    # For every ordered pair of networks (A, B) and every subject i:
+    #
+    #   ISC_AxB(i) = pearsonr( net_A_timecourse(i),
+    #                          mean_j≠i( net_B_timecourse(j) ) )
+    #
+    # Then average over subjects:
+    #   mean_ISC_AxB = mean_i( ISC_AxB(i) )
+    #
+    # The diagonal (A == B) is the standard within-network LOO-ISC.
+    # Off-diagonal elements measure how well subject i's network A
+    # tracks the group's network B.
+    #
+    # Output shapes:
+    #   cross_isc_all[order]  : (n_networks, n_networks, n_subs)
+    #   cross_isc_mean[order] : (n_networks, n_networks)
+
+    cross_isc_all  = {}
+    cross_isc_mean = {}
+
+    for order in order_labels:
+        subs_with_order = [s for s in subjects if order in subject_order_net_tc[s]]
+
+        if len(subs_with_order) < 2:
+            print(f"\n[WARN] Order {order}: too few subjects for cross-network ISC.")
+            continue
+
+        lengths = {s: subject_order_net_tc[s][order].shape[1]
+                   for s in subs_with_order}
+        min_T   = min(lengths.values())
+
+        # Stack → (n_subs, n_networks, T)
+        net_stack = np.stack(
+            [subject_order_net_tc[s][order][:, :min_T] for s in subs_with_order],
+            axis=0
+        )
+
+        n_subs_ord = len(subs_with_order)
+        isc_cube   = np.full((n_networks, n_networks, n_subs_ord), np.nan, dtype=np.float32)
+        mean_mat   = np.full((n_networks, n_networks), np.nan, dtype=np.float32)
+
+        for i in tqdm(range(n_networks),
+                      desc=f"  Cross-net ISC order-{order} ({n_subs_ord} subs)",
+                      leave=False, ncols=80):
+            for j in range(n_networks):
+                tc_a = net_stack[:, i, :]   # (n_subs, T) — network A per subject
+                tc_b = net_stack[:, j, :]   # (n_subs, T) — network B per subject
+                vals = loo_cross_network_isc(tc_a, tc_b)
+                isc_cube[i, j, :] = vals
+                mean_mat[i, j]    = np.nanmean(vals)
+
+        cross_isc_all[order]  = isc_cube
+        cross_isc_mean[order] = mean_mat
+        print(f"[INFO] Cross-network ISC order-{order}: matrix shape {mean_mat.shape}")
+        print_cross_isc_matrix(mean_mat, networks, order)
+
+    # ── 6. Save all outputs ───────────────────────────────────────────────────
+
+    # 6a. Per-ROI ISC
     for order, isc_mat in isc_results.items():
         subs     = isc_subjects[order]
         mean_isc = np.nanmean(isc_mat, axis=0)
@@ -518,9 +635,32 @@ def main():
         df_out.to_csv(
             os.path.join(args.out_dir, f"isc_order-{order}.csv"), index=False)
 
-        print(f"[INFO] Saved order-{order}: .npy + .csv")
+        print(f"[INFO] Saved per-ROI ISC order-{order}")
 
-    # Combined 3D array when subject sets are identical across all orders
+    # 6b. Cross-network ISC
+    for order, mean_mat in cross_isc_mean.items():
+        # Mean 7×7 matrix as CSV (networks as index and columns — easy to read in pandas)
+        df_cross = pd.DataFrame(mean_mat, index=networks, columns=networks)
+        df_cross.to_csv(
+            os.path.join(args.out_dir, f"cross_isc_order-{order}.csv"))
+
+        # Full (n_networks, n_networks, n_subs) cube
+        np.save(
+            os.path.join(args.out_dir, f"cross_isc_order-{order}.npy"),
+            cross_isc_all[order])
+
+        # Per-network (diagonal) as a tidy CSV
+        diag_vals = np.diag(mean_mat)
+        pd.DataFrame({
+            "network" : networks,
+            "mean_isc": diag_vals,
+        }).to_csv(
+            os.path.join(args.out_dir, f"network_isc_order-{order}.csv"), index=False)
+
+        print(f"[INFO] Saved cross-network ISC order-{order}  "
+              f"(.npy cube + .csv mean matrix + per-network diagonal)")
+
+    # 6c. Combined 3-D per-ROI array if subject sets match
     if isc_results:
         same_subs = len({tuple(v) for v in isc_subjects.values()}) == 1
         if same_subs:
@@ -529,14 +669,11 @@ def main():
             np.save(os.path.join(args.out_dir, "isc_all_orders.npy"), isc_3d)
             pd.Series(orders_sorted, name="order").to_csv(
                 os.path.join(args.out_dir, "order_index.csv"), index=False)
-            print(f"\n[INFO] Combined: isc_all_orders.npy  "
-                  f"shape={isc_3d.shape}  (n_orders × n_subjects × n_rois)")
-        else:
-            print("\n[INFO] Subject sets differ across orders — "
-                  "no combined array saved.")
+            print(f"\n[INFO] Combined per-ROI: isc_all_orders.npy  shape={isc_3d.shape}")
 
     print_isc_summary(isc_results, order_labels)
     print(f"\n[DONE] Output in: {args.out_dir}\n")
+
 
 if __name__ == "__main__":
     main()
