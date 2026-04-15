@@ -206,7 +206,7 @@ python sanity_check_backnorm.py \\
 
 The following image visualize how the mask are overlayed over the raw bold signal these mask are motion aware as we do ```inv(affine)```
 
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/sub-IRN78_ses-1_run-001_fig5_motion_mask_frames.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/sanity_checks/sub-IRN78_ses-1_run-001_fig5_motion_mask_frames.png)
 
 
 ### Inter subject correlation order wise alignment 
