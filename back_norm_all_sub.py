@@ -199,7 +199,6 @@ def output_func_dir(output_dir, subject, session) -> Path:
 def output_prefix(subject, session, run) -> str:
     return f"sub-{subject}_ses-{session}_task-videos_run-{run}"
 
-
 # =============================================================================
 # [TOPUP] path helpers -- new, mirrors main pipeline style
 # =============================================================================

@@ -6,6 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 from scipy.stats import pearsonr
 from collections import defaultdict
+from nilearn import signal  # Added to handle high-pass filtering
 
 BIDS_ROOT  = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DERIV_ROOT = os.path.join(BIDS_ROOT, "derivatives", "faizan_analysis")
@@ -56,7 +57,6 @@ def build_path(template, subject, session, run):
         session=int(session),
         run=int(run)
     )
-
 
 def preflight_check(df, bold_template, mask_template):
     print("\n" + "=" * 70)
@@ -151,7 +151,6 @@ def get_network_from_label(roi_name):
         return parts[2]
     return "Unknown"
 
-
 def build_network_roi_map(roi_names):
     """
     Group ROI indices (0-based) by network name.
@@ -180,18 +179,60 @@ def build_network_roi_map(roi_names):
 
     return ordered
 
-
-# ── ROI-level timecourse extraction ──────────────────────────────────────────
-
-def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400):
+def apply_high_pass_filter(timecourses, tr, cutoff=0.01):
     """
-    Extract mean BOLD timecourse per ROI for one segment.
+    Applies high-pass filter to the time courses of each ROI.
 
-    The mask is 4-D (X, Y, Z, T): each timepoint independently maps voxels
-    to ROI labels, so motion censoring is respected per TR.
+    Parameters
+    ----------
+    timecourses : np.ndarray (n_rois, T)
+        The extracted time courses for each ROI (before filtering).
+    tr : float
+        The repetition time (TR) in seconds.
+    cutoff : float
+        The cutoff frequency for high-pass filtering (in Hz).
 
-    Returns  signal : (n_rois, T_seg)  — NaN where ROI has no valid voxels.
+    Returns
+    -------
+    filtered_timecourses : np.ndarray (n_rois, T)
+        The time courses after applying the high-pass filter.
     """
+    # Apply high-pass filter using Nilearn's signal.clean
+    filtered_timecourses = signal.clean(timecourses, 
+                                        t_r=tr, 
+                                        high_pass=cutoff, 
+                                        detrend=True,  # Optionally detrend (removes linear trends)
+                                        standardize=True)  # Optionally standardize (z-score)
+    return filtered_timecourses
+
+
+def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400, tr=0.61, high_pass_cutoff=0.01):
+    """
+    Extract mean BOLD timecourse per ROI for one segment, and apply high-pass filtering.
+
+    Parameters
+    ----------
+    bold_data : np.ndarray
+        The BOLD data (4D: X, Y, Z, T).
+    mask_data : np.ndarray
+        The mask data (4D: X, Y, Z, T).
+    start_idx : int
+        The start index for the segment.
+    end_idx : int
+        The end index for the segment.
+    n_rois : int
+        The number of ROIs (default: 400).
+    tr : float
+        The repetition time (TR) in seconds.
+    high_pass_cutoff : float
+        The cutoff frequency for the high-pass filter (default: 0.01 Hz).
+
+    Returns
+    -------
+    signal : np.ndarray
+        The extracted and filtered time course for each ROI.
+    """
+    # Extract the BOLD and mask segments
     n_vols  = bold_data.shape[-1]
     end_idx = min(end_idx, n_vols)
     if start_idx >= end_idx:
@@ -206,6 +247,7 @@ def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400)
 
     signal = np.full((n_rois, T), np.nan, dtype=np.float32)
 
+    # Extract the ROI-wise signal (mean per ROI per timepoint)
     for t in range(T):
         m      = mask_flat[:, t]
         b      = bold_flat[:, t]
@@ -216,7 +258,46 @@ def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400)
         valid  = c > 0
         signal[valid, t] = (s[valid] / c[valid]).astype(np.float32)
 
-    return signal   # (n_rois, T_seg)
+    # Apply high-pass filtering to the extracted signal (ROI time courses)
+    filtered_signal = apply_high_pass_filter(signal, tr, cutoff=high_pass_cutoff)
+    return filtered_signal   # (n_rois, T_seg)
+
+
+# # ── ROI-level timecourse extraction ──────────────────────────────────────────
+# def extract_roi_timecourse(bold_data, mask_data, start_idx, end_idx, n_rois=400):
+#     """
+#     Extract mean BOLD timecourse per ROI for one segment.
+
+#     The mask is 4-D (X, Y, Z, T): each timepoint independently maps voxels
+#     to ROI labels, so motion censoring is respected per TR.
+
+#     Returns  signal : (n_rois, T_seg)  — NaN where ROI has no valid voxels.
+#     """
+#     n_vols  = bold_data.shape[-1]
+#     end_idx = min(end_idx, n_vols)
+#     if start_idx >= end_idx:
+#         raise ValueError(f"start_idx ({start_idx}) >= end_idx ({end_idx}).")
+
+#     bold_seg  = bold_data[:, :, :, start_idx:end_idx]
+#     mask_seg  = mask_data[:, :, :, start_idx:end_idx]
+#     T         = bold_seg.shape[-1]
+
+#     bold_flat = bold_seg.reshape(-1, T).astype(np.float64)
+#     mask_flat = mask_seg.reshape(-1, T).astype(np.int32)
+
+#     signal = np.full((n_rois, T), np.nan, dtype=np.float32)
+
+#     for t in range(T):
+#         m      = mask_flat[:, t]
+#         b      = bold_flat[:, t]
+#         counts = np.bincount(m, minlength=n_rois + 1)
+#         sums   = np.bincount(m, weights=b, minlength=n_rois + 1)
+#         c      = counts[1:n_rois + 1]
+#         s      = sums  [1:n_rois + 1]
+#         valid  = c > 0
+#         signal[valid, t] = (s[valid] / c[valid]).astype(np.float32)
+
+#     return signal   # (n_rois, T_seg)
 
 
 def mean_centre(signal):
@@ -247,7 +328,6 @@ def average_segments(segments):
 
 
 # ── Network-level timecourse ──────────────────────────────────────────────────
-
 def roi_to_network_timecourses(roi_tc, network_roi_map):
     """
     Average ROI timecourses within each network.
@@ -345,7 +425,6 @@ def loo_cross_network_isc(tc_a_stack, tc_b_stack):
 
 
 # ── Printing helpers ──────────────────────────────────────────────────────────
-
 def print_coverage_table(subject_order_tc, subjects, order_labels):
     print("\n" + "=" * 70)
     print("  SUBJECT × ORDER COVERAGE   ✓(T) = timecourse extracted")
@@ -397,7 +476,6 @@ def print_cross_isc_matrix(mean_mat, networks, order):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
