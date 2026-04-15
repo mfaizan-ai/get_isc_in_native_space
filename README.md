@@ -306,8 +306,7 @@ python isc_schaefer.py --csv path/to/file.csv
 ``` 
 if we run the visualization script for hte last step data we generated for ISC, we will get following figures that showns the intersubject correlation among brain networks 
 with respect to the video order the subjects watched. 
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/isc_scheafer_infants/heatmap.png)
-![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/isc_scheafer_infants/brain_order-A.png)
+![alt text](https://github.com/mfaizan-ai/get_isc_in_native_space/blob/main/images/isc_scheafer_infants/high_pass_filtering/cross_isc_grid.png)
 
 
 ### References
