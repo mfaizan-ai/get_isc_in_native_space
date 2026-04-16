@@ -211,34 +211,7 @@ The following image visualize how the mask are overlayed over the raw bold signa
 
 ### Inter subject correlation order wise alignment 
 The isc_data/ directory contains mean V1 time courses extracted from masked BOLD fMRI data, organized for inter-subject correlation (ISC) analysis. 
-The data is structured hierarchically by stimulus order (A–F), session, and run, with each .npy file representing the mean V1 time course (T,) for a specific subject segment. 
-This organization enables ISC computation aligned across subjects who watched the same stimulus order.
-```bash id="v9p2ds"
-isc_data/
-├── order-A/
-│   ├── ses-1/
-│   │   ├── run-1/
-│   │   │   ├── sub-ICC105.npy   # mean V1 time course (T,) for this segment
-│   │   │   ├── sub-ICC107.npy
-│   │   │   └── ...
-│   │   ├── run-2/
-│   │   │   └── ...
-│   ├── ses-2/
-│   │   ├── run-1/
-│   │   │   └── ...
-│   │   └── run-2/
-├── order-B/
-│   └── ses-1/
-│       └── ...
-├── order-C/
-│   └── ...
-├── order-D/
-│   └── ...
-├── order-E/
-│   └── ...
-└── order-F/
-    └── ...
-```
+The data is structured hierarchically by stimulus order (A–F), session, and run, with each .npy file representing the mean V1 time course (T,) for a specific subject segment.  This is how the ISC calculate for v1 mask. 
 
 To get the isc_time course data for each order, per session, per run:
 ```bash
