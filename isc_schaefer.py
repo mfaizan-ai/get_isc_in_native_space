@@ -16,18 +16,15 @@ BOLD_TEMPLATE = os.path.join(
     "{subject}", "ses-{session}", "func",
     "{subject}_ses-{session}_task-videos_dir-AP_run-{run:03d}_bold.nii.gz"
 )
-
 MASK_TEMPLATE = os.path.join(
     DERIV_ROOT, "schaefer_backnorm",
     "{subject}", "ses-{session}", "func", "mask_4d",
     "{subject}_ses-{session}_task-videos_run-{run:03d}_space-native_desc-mask4d.nii.gz"
 )
-
 LABELS_PATH = (
     "/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/"
     "templates/rois/Schaefer2018_400Parcels_7Networks_order.lut"
 )
-
 DEFAULT_CSV = "per_order_alignment/segments_mapping_each_sub_usable.csv"
 DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis_and_high_pass_filtering_debug")
 
@@ -110,7 +107,6 @@ def preflight_check(df, bold_template, mask_template):
 
     return found, missing
 
-
 # Atlas helpers 
 def load_lut(lut_path):
     """Parse Schaefer .lut → dict {roi_id (int): roi_name (str)}."""
@@ -131,7 +127,6 @@ def load_lut(lut_path):
                     continue
     print(f"[INFO] Loaded {len(labels)} ROI labels.")
     return labels
-
 
 def get_network_from_label(roi_name):
     """
