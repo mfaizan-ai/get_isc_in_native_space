@@ -111,7 +111,7 @@ def preflight_check(df, bold_template, mask_template):
     return found, missing
 
 
-# ── Atlas helpers ─────────────────────────────────────────────────────────────
+# Atlas helpers 
 def load_lut(lut_path):
     """Parse Schaefer .lut → dict {roi_id (int): roi_name (str)}."""
     labels = {}
@@ -327,7 +327,7 @@ def average_segments(segments):
     return np.nanmean(stacked, axis=0)   # (n_rois, T)
 
 
-# ── Network-level timecourse ──────────────────────────────────────────────────
+#Network-level timecourse 
 def roi_to_network_timecourses(roi_tc, network_roi_map):
     """
     Average ROI timecourses within each network.
@@ -351,7 +351,7 @@ def roi_to_network_timecourses(roi_tc, network_roi_map):
     return net_tc_array, networks
 
 
-# ── ISC functions ─────────────────────────────────────────────────────────────
+# ISC functions 
 def loo_isc_single_roi(tc_matrix):
     """
     Standard LOO-ISC for one ROI (or one network timecourse).
@@ -424,7 +424,7 @@ def loo_cross_network_isc(tc_a_stack, tc_b_stack):
     return isc_vals
 
 
-# ── Printing helpers ──────────────────────────────────────────────────────────
+# Printing helpers
 def print_coverage_table(subject_order_tc, subjects, order_labels):
     print("\n" + "=" * 70)
     print("  SUBJECT × ORDER COVERAGE   ✓(T) = timecourse extracted")
@@ -475,7 +475,6 @@ def print_cross_isc_matrix(mean_mat, networks, order):
         print(f"  {net_a:<12}{row_vals}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -487,7 +486,7 @@ def main():
         print(f"  {k:<18}: {v}")
     print("=" * 65)
 
-    # ── 1. Load & filter CSV ──────────────────────────────────────────────────
+    # 1. Load & filter CSV 
     df = pd.read_csv(args.csv)
     df = df[~df["skip"].astype(bool) & ~df["short_segment"].astype(bool)].copy()
 
@@ -508,10 +507,10 @@ def main():
     print(f"[INFO] Orders         : {order_labels}")
     print(f"[INFO] ROIs           : {n_rois}")
 
-    # ── 2. Preflight ──────────────────────────────────────────────────────────
+    #  2. Preflight checks 
     valid_pairs, _ = preflight_check(df, args.bold_template, args.mask_template)
 
-    # ── 3. Atlas labels & network map ─────────────────────────────────────────
+    #  3. Atlas labels & network map 
     labels    = load_lut(args.labels)
     roi_names = [labels.get(r, f"ROI_{r}") for r in range(1, n_rois + 1)]
 
@@ -603,7 +602,7 @@ def main():
 
     print_coverage_table(subject_order_tc, subjects, order_labels)
 
-    # ── 5a. LOO-ISC per ROI ───────────────────────────────────────────────────
+    # 5a. LOO-ISC per ROI 
     isc_results  = {}
     isc_subjects = {}
 
@@ -633,8 +632,7 @@ def main():
         isc_subjects[order] = subs_with_order
         print(f"[INFO] Per-ROI ISC order-{order}: shape {isc_mat.shape}")
 
-    # ── 5b. Cross-network LOO-ISC  (7 × 7 matrix) ────────────────────────────
-    #
+    # 5b. Cross-network LOO-ISC  (7 × 7 matrix)
     # For every ordered pair of networks (A, B) and every subject i:
     #
     #   ISC_AxB(i) = pearsonr( net_A_timecourse(i),
@@ -690,7 +688,7 @@ def main():
         print(f"[INFO] Cross-network ISC order-{order}: matrix shape {mean_mat.shape}")
         print_cross_isc_matrix(mean_mat, networks, order)
 
-    # ── 6. Save all outputs ───────────────────────────────────────────────────
+    # 6. Save all outputs 
 
     # 6a. Per-ROI ISC
     for order, isc_mat in isc_results.items():
