@@ -29,7 +29,7 @@ LABELS_PATH = (
 )
 
 DEFAULT_CSV = "per_order_alignment/segments_mapping_each_sub_usable.csv"
-DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis_and_high_pass_filtering")
+DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis_and_high_pass_filtering_debug")
 
 # Canonical Yeo 7-network order (used to sort the 7×7 matrix rows/columns)
 NETWORK_ORDER = ["Vis", "SomMot", "DorsAttn", "SalVentAttn", "Limbic", "Cont", "Default"]
@@ -50,7 +50,7 @@ def parse_args():
     return parser.parse_args()
 
 
-# ── Path helpers ──────────────────────────────────────────────────────────────
+# Path helpers 
 def build_path(template, subject, session, run):
     return template.format(
         subject=str(subject),
