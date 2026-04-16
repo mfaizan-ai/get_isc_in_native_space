@@ -19,7 +19,7 @@ from nipype.interfaces import fsl
 from nipype.interfaces.io import DataSink
 from nipype.interfaces.utility import Function
 
-
+# configure logger 
 logging.basicConfig(
     level   = logging.INFO,
     format  = "%(asctime)s [%(levelname)s] %(message)s",
@@ -28,9 +28,8 @@ logging.basicConfig(
 log = logging.getLogger("backnorm")
 
 
-# =============================================================================
-# Default paths  
-# =============================================================================
+
+# Default paths, used with argparse if not command line arg parsed. 
 _BIDS_DIR = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DEFAULTS = dict(
     bids_dir              = _BIDS_DIR,
@@ -47,17 +46,14 @@ DEFAULTS = dict(
     n_procs         = None,   # None = auto-detect from SLURM
     memory_gb       = None,   # None = auto-detect from SLURM
     batch_size      = 200,    # max runs per meta-workflow to keep graph lean
-    # -------------------------------------------------------------------------
-    # [TOPUP] defaults -- only used when --use_topup is passed
-    # -------------------------------------------------------------------------
-    use_topup       = True,  # off by default; existing runs unaffected
+   
+    use_topup       = True,  
 )
 
 EXCLUDE_SUBS = ["ICC89", "ICC103", "ICN50", "ICC57"]
 
-# =============================================================================
-# Scratch / TMPDIR management
-# =============================================================================
+
+# Scratch / TMPDIR management for IO bottleneck 
 _SCRATCH_DIR: Optional[Path] = None   # set once in setup_scratch()
 
 def setup_scratch() -> Path:
@@ -151,9 +147,8 @@ def parse_args() -> argparse.Namespace:
                    help="Total memory in GB (default: from SLURM env)")
     p.add_argument("--batch_size",       type=int, default=DEFAULTS["batch_size"],
                    help="Max runs per meta-workflow graph (default: 200)")
-    # -------------------------------------------------------------------------
-    # [TOPUP] new flag -- all other args unchanged
-    # -------------------------------------------------------------------------
+
+    # [TOPUP] new feature
     p.add_argument("--use_topup",        action="store_true", default=False,
                    help=(
                        "Apply FSL topup distortion correction to the BOLD "
@@ -164,9 +159,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# =============================================================================
-# Path helpers  (originals unchanged)
-# =============================================================================
+
+# Path helpers functions 
 def bold_path(bids_dir, subject, session, run) -> Path:
     return (
         Path(bids_dir) / f"sub-{subject}" / f"ses-{session}" / "func"
@@ -199,9 +193,8 @@ def output_func_dir(output_dir, subject, session) -> Path:
 def output_prefix(subject, session, run) -> str:
     return f"sub-{subject}_ses-{session}_task-videos_run-{run}"
 
-# =============================================================================
-# [TOPUP] path helpers -- new, mirrors main pipeline style
-# =============================================================================
+
+# [TOPUP] path helpers
 def fmap_paths(bids_dir: str, subject: str, session: str) -> Tuple[List[Path], List[Path]]:
     """
     Return (ap_fmaps, pa_fmaps) for a given subject/session.
@@ -293,9 +286,7 @@ def _read_fmap_params(fmap_files: List[Path]) -> Tuple[List[str], List[float]]:
     return enc_dirs, readout_times
 
 
-# =============================================================================
-# Discovery helpers  (unchanged)
-# =============================================================================
+# Discovery helpers
 def find_subjects(bids_dir: str) -> List[str]:
     return sorted(
         d.name[4:]
@@ -327,9 +318,7 @@ def find_sessions_and_runs(bids_dir: str, subject: str) -> List[Tuple[str, str]]
     return pairs
 
 
-# =============================================================================
-# Validation
-# =============================================================================
+# Checks 
 _G = "\033[32m"; _R = "\033[31m"; _Y = "\033[33m"; _E = "\033[0m"
 def _ok(m):   return f"{_G}  OK   {_E}{m}"
 def _miss(m): return f"{_R}  MISS {_E}{m}"
@@ -455,9 +444,7 @@ def check_all_paths(subjects, args) -> Tuple[List[Tuple[str,str,str]], List[str]
     return ready, skipped
 
 
-# =============================================================================
-# Progress tracker  (unchanged)
-# =============================================================================
+# Progress tracker 
 class ProgressTracker:
     """
     Progress callback for Nipype's MultiProc plugin.
@@ -488,9 +475,7 @@ class ProgressTracker:
         )
 
 
-# =============================================================================
-# Nipype configuration  (unchanged)
-# =============================================================================
+# Nipype configs
 def configure_nipype(scratch: Path):
     nipype_config.set("execution", "stop_on_first_crash",  "false")
     nipype_config.set("execution", "crashdump_dir",        str(scratch / "crashdumps"))
@@ -502,9 +487,7 @@ def configure_nipype(scratch: Path):
     (scratch / "crashdumps").mkdir(parents=True, exist_ok=True)
 
 
-# =============================================================================
-# [TOPUP] helper nodes -- mirrors the main pipeline's select_fmaps approach
-# =============================================================================
+# [TOPUP] helper nodes
 def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> Tuple:
     """
     Build the topup-related nodes and return them ready to be wired into
@@ -607,17 +590,16 @@ def _build_topup_nodes(bold: str, bids_dir: str, subject: str, session: str) -> 
     return hmc_fmaps, mean_fmaps, merge_fmaps, topup_node, applytopup_node
 
 
-# =============================================================================
+
 # Core per-run workflow  
-# One small new parameter: use_topup (False by default, original unchanged)
-# =============================================================================
+# One small new parameter: use_topup for distoration correction 
 def build_run_workflow(
     subject, session, run,
     bold, fwd_mat, mats,
     template_schaefer_atlas, output_dir,
     nipype_work_dir,
-    bids_dir,           # [TOPUP] needed to locate fieldmaps; harmless when unused
-    use_topup = False,  # [TOPUP] off by default -- original behaviour preserved
+    bids_dir,           # [TOPUP] needed to locate fieldmaps
+    use_topup = False,  # [TOPUP] off by default 
 ) -> Workflow:
     """
     One Nipype workflow per subject/session/run.
@@ -826,10 +808,8 @@ def build_run_workflow(
     return wf
 
 
-# =============================================================================
-# Batch runner  (one new kwarg: use_topup, passed straight through)
-# =============================================================================
-
+#
+# Batching for speedup
 def run_batch(
     batch:           List[Tuple[str, str, str]],
     batch_idx:       int,
@@ -893,9 +873,7 @@ def run_batch(
     )
 
 
-# =============================================================================
-# Main  (unchanged except passing use_topup through)
-# =============================================================================
+# Main, magnage everything together
 def main():
     args = parse_args()
 
