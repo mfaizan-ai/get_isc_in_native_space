@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+
+"""
+Sanity check for back-normalization outputs.
+--------------------------------------------
+
+
+for my previous experience, i leanred that, not only hte stats are important but looking at 
+the saved plots are important to see the registration accuracy. 
+"""
+
 import argparse
 import sys
 from pathlib import Path
