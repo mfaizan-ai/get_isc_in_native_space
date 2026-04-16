@@ -176,7 +176,6 @@ def build_network_roi_map(roi_names):
     for net in net_map:        # catch any unlabelled / unexpected networks
         if net not in ordered:
             ordered[net] = np.array(net_map[net])
-
     return ordered
 
 def apply_high_pass_filter(timecourses, tr, cutoff=0.01):
