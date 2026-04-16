@@ -8,7 +8,6 @@
 #SBATCH --time=8:00:00
 #SBATCH --partition=gpu
 
-# ── Tuneable parameters ─────────────────────────────────────────────────────
 N_BOOT=1000
 SEED=42
 CI_ALPHA=0.05
@@ -20,7 +19,7 @@ PIPELINE="${SCRIPT_DIR}/isc_schaefer_boostrape.py"
 CSV="${SCRIPT_DIR}/per_order_alignment/segments_mapping_each_sub_usable.csv"
 OUT_DIR="/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis/isc_schaefer/across_brain_networks_analysis_and_bootsrapping"
 
-# ── Setup ────────────────────────────────────────────────────────────────────
+# Setup 
 mkdir -p logs
 
 echo "======================================================================"
@@ -39,7 +38,7 @@ echo "CSV        : ${CSV}"
 echo "OUT_DIR    : ${OUT_DIR}"
 echo "======================================================================"
 
-# ── Conda ────────────────────────────────────────────────────────────────────
+#Conda
 source ~/.bashrc
 conda activate isc_analysis
 
@@ -50,7 +49,7 @@ python -c "import nibabel; print('nibabel', nibabel.__version__)"
 python -c "import nilearn; print('nilearn', nilearn.__version__)"
 echo "------------------"
 
-# ── Build command ────────────────────────────────────────────────────────────
+#Build command 
 CMD=(
     python -u "${PIPELINE}"
     --csv       "${CSV}"
@@ -68,11 +67,11 @@ fi
 echo "Command    : ${CMD[*]}"
 echo "======================================================================"
 
-# ── Run ──────────────────────────────────────────────────────────────────────
+# ── Run
 "${CMD[@]}"
 EXIT_CODE=$?
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# ── Summary 
 echo "======================================================================"
 echo "Finished   : $(date)"
 echo "Exit code  : ${EXIT_CODE}"
