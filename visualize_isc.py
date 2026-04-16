@@ -70,8 +70,7 @@ def parse_args():
     return parser.parse_args()
 
 
-# ── Data loaders ──────────────────────────────────────────────────────────────
-
+#Data loaders 
 def load_all_orders(isc_dir):
     """
     Load every isc_order-*.csv file.
@@ -127,8 +126,7 @@ def load_cross_isc_orders(isc_dir):
     return cross_data
 
 
-# ── Existing helpers ──────────────────────────────────────────────────────────
-
+# Existing helpers
 def parse_network(roi_name):
     parts = roi_name.split("_")
     if len(parts) >= 3:
@@ -157,8 +155,6 @@ def build_network_summary(data):
             })
     return pd.DataFrame(rows)
 
-
-# ── Existing figures ──────────────────────────────────────────────────────────
 
 def plot_network_summary(summary_df, out_path, dpi=150):
     networks = [n for n in NETWORK_COLOURS if n in summary_df["network"].unique()]
@@ -332,8 +328,7 @@ def plot_subject_distribution(data, out_path, dpi=150):
     print(f"  [SAVED] {out_path}")
 
 
-# ── NEW: Cross-network ISC matrix figures ─────────────────────────────────────
-
+# Cross-network ISC matrix figures 
 def _reorder_matrix(df):
     """
     Reorder the rows and columns of a 7×7 cross-ISC DataFrame to match
@@ -600,8 +595,6 @@ def plot_cross_isc_offdiag(cross_data, out_path, dpi=150):
     print(f"  [SAVED] {out_path}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -613,17 +606,17 @@ def main():
     print(f"  out_dir : {args.out_dir}")
     print("=" * 60 + "\n")
 
-    # ── Load data ─────────────────────────────────────────────────────────────
+    # Load data 
     print("[LOAD] Per-ROI ISC files...")
     data = load_all_orders(args.isc_dir)
 
     print("\n[LOAD] Cross-network ISC matrix files...")
     cross_data = load_cross_isc_orders(args.isc_dir)
 
-    # ── Network summary ───────────────────────────────────────────────────────
+    #  Network summary
     summary_df = build_network_summary(data)
 
-    # ── Figure 1: Grouped bar chart ───────────────────────────────────────────
+    # Figure 1: Grouped bar chart 
     print("\n[FIG 1] Network summary bar chart...")
     plot_network_summary(
         summary_df,
@@ -631,7 +624,7 @@ def main():
         dpi=args.dpi
     )
 
-    # ── Figure 2: Network × Order heatmap ────────────────────────────────────
+    #  Figure 2: Network × Order heatmap
     print("\n[FIG 2] Network × Order heatmap...")
     plot_heatmap(
         summary_df,
@@ -639,7 +632,7 @@ def main():
         dpi=args.dpi
     )
 
-    # ── Figure 3: Top-ROI bar charts per order ────────────────────────────────
+    #Figure 3: Top-ROI bar charts per order 
     print("\n[FIG 3] Top-ROI bar charts per order...")
     for order, df in data.items():
         plot_top_rois(
@@ -648,7 +641,7 @@ def main():
             dpi=args.dpi
         )
 
-    # ── Figure 4: Brain maps per order ───────────────────────────────────────
+    #Figure 4: Brain maps per order 
     if not args.no_brain:
         print("\n[FIG 4] Brain glass maps per order...")
         for order, df in data.items():
@@ -660,7 +653,7 @@ def main():
     else:
         print("\n[FIG 4] Brain maps skipped (--no_brain).")
 
-    # ── Figure 5: Per-subject distribution ───────────────────────────────────
+    # Figure 5: Per-subject distribution
     print("\n[FIG 5] Per-subject ISC distribution...")
     plot_subject_distribution(
         data,
@@ -668,7 +661,7 @@ def main():
         dpi=args.dpi
     )
 
-    # ── Figures 6–8: Cross-network ISC matrices ───────────────────────────────
+    #  Figures 6–8: Cross-network ISC matrices 
     if cross_data:
         # Shared colour scale across all orders so matrices are comparable
         shared_vmax = _cross_isc_vrange(cross_data)
@@ -702,7 +695,7 @@ def main():
         print("\n[FIG 6–8] Cross-network ISC figures skipped "
               "(no cross_isc_order-*.csv files found).")
 
-    # ── Summary ───────────────────────────────────────────────────────────────
+    # Summary 
     print("\n" + "=" * 60)
     print("  Done. Figures saved:")
     print("=" * 60)
