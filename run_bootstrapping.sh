@@ -6,10 +6,9 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=8:00:00
-#SBATCH --partition=compute
+#SBATCH --partition=gpu
 
 # ── Tuneable parameters ─────────────────────────────────────────────────────
-# Change these to control the bootstrap without editing the Python script.
 N_BOOT=1000
 SEED=42
 CI_ALPHA=0.05
@@ -17,9 +16,9 @@ BOOTSTRAP_PER_ROI=0          # set to 1 to also bootstrap per-ROI ISC (slow)
 
 # Paths
 SCRIPT_DIR="/lustre/disk/home/users/mfaizan/isc_analysis/isc_analysis_native_space/get_isc_in_native_space"
-PIPELINE="${SCRIPT_DIR}/isc_schaefer_bootstrap.py"
+PIPELINE="${SCRIPT_DIR}/isc_schaefer_boostrape.py"
 CSV="${SCRIPT_DIR}/per_order_alignment/segments_mapping_each_sub_usable.csv"
-OUT_DIR="/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis/isc_schaefer/across_brain_networks_analysis_and_boostrapping"
+OUT_DIR="/lustre/disk/home/shared/cusacklab/foundcog/bids/derivatives/faizan_analysis/isc_schaefer/across_brain_networks_analysis_and_bootsrapping"
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 mkdir -p logs
@@ -39,13 +38,6 @@ echo "SCRIPT     : ${PIPELINE}"
 echo "CSV        : ${CSV}"
 echo "OUT_DIR    : ${OUT_DIR}"
 echo "======================================================================"
-
-# ── NumPy / MKL threading ───────────────────────────────────────────────────
-# Let numpy/einsum use all allocated CPUs for the vectorised ISC + bootstrap.
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export NUMEXPR_MAX_THREADS=${SLURM_CPUS_PER_TASK}
 
 # ── Conda ────────────────────────────────────────────────────────────────────
 source ~/.bashrc
