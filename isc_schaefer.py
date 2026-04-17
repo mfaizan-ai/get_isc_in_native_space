@@ -196,7 +196,7 @@ def apply_high_pass_filter(timecourses, tr, cutoff=0.01):
                                         t_r=tr, 
                                         high_pass=cutoff, 
                                         detrend=True,  # Optionally detrend (removes linear trends)
-                                        standardize=True)  # Optionally standardize (z-score)
+                                        standardize=True, filter='cosine') 
     return filtered_timecourses
 
 
