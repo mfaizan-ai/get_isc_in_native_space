@@ -7,6 +7,8 @@ from tqdm import tqdm
 from scipy.stats import pearsonr
 from collections import defaultdict
 from nilearn import signal  # Added to handle high-pass filtering
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 BIDS_ROOT  = "/lustre/disk/home/shared/cusacklab/foundcog/bids"
 DERIV_ROOT = os.path.join(BIDS_ROOT, "derivatives", "faizan_analysis")
@@ -26,7 +28,7 @@ LABELS_PATH = (
     "templates/rois/Schaefer2018_400Parcels_7Networks_order.lut"
 )
 DEFAULT_CSV = "per_order_alignment/segments_mapping_each_sub_usable.csv"
-DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis_and_high_pass_filtering_debug")
+DEFAULT_OUT = os.path.join(DERIV_ROOT, "isc_schaefer", "across_brain_networks_analysis_and_high_pass_filtering_with_consine_filter")
 
 # Canonical Yeo 7-network order (used to sort the 7×7 matrix rows/columns)
 NETWORK_ORDER = ["Vis", "SomMot", "DorsAttn", "SalVentAttn", "Limbic", "Cont", "Default"]
@@ -196,7 +198,7 @@ def apply_high_pass_filter(timecourses, tr, cutoff=0.01):
                                         t_r=tr, 
                                         high_pass=cutoff, 
                                         detrend=True,  # Optionally detrend (removes linear trends)
-                                        standardize=True, filter='cosine') 
+                                        standardize="zscore_sample", filter='cosine') 
     return filtered_timecourses
 
 

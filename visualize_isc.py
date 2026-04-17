@@ -44,7 +44,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 DEFAULT_ISC_DIR = (
     "/lustre/disk/home/shared/cusacklab/foundcog/bids/"
     "derivatives/faizan_analysis/isc_schaefer/"
-    "across_brain_networks_analysis_and_high_pass_filtering"
+    "across_brain_networks_analysis_and_high_pass_filtering_with_consine_filter"
 )
 DEFAULT_OUT_DIR = os.path.join(DEFAULT_ISC_DIR, "figures")
 
