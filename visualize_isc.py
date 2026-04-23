@@ -13,11 +13,24 @@ presentation-ready figures:
   7.  cross_isc_grid.png           — all orders' 7×7 matrices in one comparison grid
   8.  cross_isc_offdiag.png        — off-diagonal cross-network structure (diagonal subtracted)
 
-  === NEW (BOOTSTRAP) — only when --bootstrap flag is passed ===
-  9.  cross_isc_order-<N>_boot.png — per-order 7×7 with significance stars + CI annotations
-  10. cross_isc_combined_boot.png  — combined (mean over orders) matrix with CIs + thresholded
+  === BOOTSTRAP — only when --bootstrap flag is passed ===
+  9.  cross_isc_order-<N>_boot.png — per-order 7×7 with p-value significance + CI annotations
+  10. cross_isc_combined_boot.png  — combined matrix with p-value sig + thresholded panel
   11. cross_isc_offdiag_boot.png   — off-diagonal with thresholded panel (non-sig cells blanked)
-  12. bootstrap_distributions.png  — histogram of bootstrap samples for diagonal + select cells
+  12. bootstrap_distributions.png  — histograms of bootstrap samples for diagonal + select cells
+  13. pval_matrices.png            — p_pos and p_neg heatmaps (7×7) for combined result
+
+  P-VALUE METHOD (two-tailed, split at 0.025/0.025)
+  ──────────────────────────────────────────────────
+  Uses the SHIFT TRICK on saved bootstrap cubes (no extra computation needed):
+    null[b, i, j]  = boot[b, i, j] - point[i, j]      # centre at zero
+    p_pos[i, j]    = mean(null[:, i, j] >= |point[i, j]|)   # upper tail
+    p_neg[i, j]    = mean(null[:, i, j] <= -|point[i, j]|)  # lower tail
+    sig_pval[i, j] = (p_pos[i, j] < 0.025) | (p_neg[i, j] < 0.025)
+
+  This is preferred over the CI-based significance mask because it gives
+  explicit directional p-values and is internally consistent with the
+  saved bootstrap cubes.
 
 Usage
 -----
@@ -44,7 +57,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 DEFAULT_ISC_DIR = (
     "/lustre/disk/home/shared/cusacklab/foundcog/bids/"
     "derivatives/faizan_analysis/isc_schaefer/"
-    "across_brain_networks_analysis_and_high_pass_filtering_with_consine_filter"
+    "across_brain_networks_analysis_and_bootsrapping"
 )
 DEFAULT_OUT_DIR = os.path.join(DEFAULT_ISC_DIR, "figures")
 
@@ -71,6 +84,10 @@ NETWORK_FULLNAMES = {
 NETWORK_ORDER = ["Vis", "SomMot", "DorsAttn", "SalVentAttn",
                  "Limbic", "Cont", "Default"]
 
+# Thresholds for the two-tailed split p-value test
+ALPHA_POS = 0.025   # upper-tail threshold
+ALPHA_NEG = 0.025   # lower-tail threshold
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualise ISC results.")
@@ -79,16 +96,18 @@ def parse_args():
     parser.add_argument("--top_n",     type=int, default=20)
     parser.add_argument("--no_brain",  action="store_true")
     parser.add_argument("--dpi",       type=int, default=150)
-
-    # === NEW (BOOTSTRAP) === flag to enable bootstrap figures ================
     parser.add_argument("--bootstrap", action="store_true",
                         help="Load bootstrap data from {isc_dir}/bootstrap/ "
-                             "and generate CI-annotated + thresholded figures.")
-    # =========================================================================
+                             "and generate p-value-annotated + thresholded figures.")
+    parser.add_argument("--alpha_pos", type=float, default=ALPHA_POS,
+                        help="Upper-tail p-value threshold (default 0.025).")
+    parser.add_argument("--alpha_neg", type=float, default=ALPHA_NEG,
+                        help="Lower-tail p-value threshold (default 0.025).")
     return parser.parse_args()
 
 
 # ── Data loaders ─────────────────────────────────────────────────────────────
+
 def load_all_orders(isc_dir):
     pattern = os.path.join(isc_dir, "isc_order-*.csv")
     files   = sorted(glob.glob(pattern))
@@ -123,25 +142,68 @@ def load_cross_isc_orders(isc_dir):
     return cross_data
 
 
-# === NEW (BOOTSTRAP) === bootstrap data loader ===============================
-def load_bootstrap_data(isc_dir):
-    """
-    Load all bootstrap outputs from {isc_dir}/bootstrap/.
+# ── P-value computation (shift trick) ────────────────────────────────────────
 
-    Returns a dict with keys:
-        meta              : dict from bootstrap_meta.json
-        ci_per_order      : {order: {point, lower, upper, sig, networks}}
-        combined_ci       : {point, lower, upper, sig, networks} or None
-        boot_per_order    : {order: (n_boot, 7, 7) ndarray}
-        combined_boot     : (n_boot, 7, 7) ndarray or None
-        thresholded       : DataFrame or None (combined thresholded matrix)
+def compute_pval_from_boot(boot_cube, point_estimate, alpha_pos=0.025, alpha_neg=0.025):
+    """
+    Two-tailed p-values via the shift trick.
+
+    Shifts the bootstrap distribution to be centred at zero, then checks
+    how often the null distribution is as extreme as the observed statistic
+    in each tail separately.
+
+    Parameters
+    ----------
+    boot_cube      : (n_boot, n_nets, n_nets)  — saved bootstrap samples
+    point_estimate : (n_nets, n_nets)           — observed mean matrix
+    alpha_pos      : float — upper-tail threshold (default 0.025)
+    alpha_neg      : float — lower-tail threshold (default 0.025)
+
+    Returns
+    -------
+    p_pos    : (n_nets, n_nets) — upper-tail p-values
+    p_neg    : (n_nets, n_nets) — lower-tail p-values
+    sig_pval : (n_nets, n_nets) bool — True where p_pos < alpha_pos OR p_neg < alpha_neg
+
+    Method
+    ------
+    null[b, i, j] = boot[b, i, j] - point[i, j]       ← shift to zero
+    p_pos[i, j]   = mean(null[:, i, j] >= |point[i, j]|)   ← upper tail
+    p_neg[i, j]   = mean(null[:, i, j] <= -|point[i, j]|)  ← lower tail
+
+    Using |point| for both tails ensures we always check the appropriate
+    extreme end regardless of the sign of the observed value.
+    A positive observed value → p_pos will be small (correct).
+    A negative observed value → p_neg will be small (correct).
+    """
+    # null distribution centred at zero for every cell independently
+    null = boot_cube - point_estimate[np.newaxis, :, :]          # (n_boot, n, n)
+    abs_point = np.abs(point_estimate)                            # (n, n)
+
+    # Upper tail: how often does the null reach as high as |observed|?
+    p_pos = np.mean(null >= abs_point[np.newaxis, :, :], axis=0)  # (n, n)
+
+    # Lower tail: how often does the null drop as low as -|observed|?
+    p_neg = np.mean(null <= -abs_point[np.newaxis, :, :], axis=0) # (n, n)
+
+    sig_pval = (p_pos < alpha_pos) | (p_neg < alpha_neg)
+
+    return p_pos.astype(np.float32), p_neg.astype(np.float32), sig_pval
+
+
+def load_bootstrap_data(isc_dir, alpha_pos=0.025, alpha_neg=0.025):
+    """
+    Load all bootstrap outputs from {isc_dir}/bootstrap/ and compute
+    two-tailed p-values from the stored bootstrap cubes using the shift trick.
+
+    p_pos, p_neg, and sig_pval are added to every ci_per_order entry and
+    to combined_ci so that all downstream figure functions have them.
 
     Returns None if the bootstrap directory doesn't exist.
     """
     boot_dir = os.path.join(isc_dir, "bootstrap")
     if not os.path.isdir(boot_dir):
         print(f"  [WARN] Bootstrap directory not found: {boot_dir}")
-        print("         Run isc_schaefer_bootstrap.py with --bootstrap first.")
         return None
 
     result = {}
@@ -158,28 +220,7 @@ def load_bootstrap_data(isc_dir):
     else:
         result["meta"] = {}
 
-    # Per-order CIs
-    ci_per_order = {}
-    ci_pattern = os.path.join(boot_dir, "cross_isc_ci_order-*.npz")
-    for f in sorted(glob.glob(ci_pattern)):
-        order = (os.path.basename(f)
-                 .replace("cross_isc_ci_order-", "")
-                 .replace(".npz", ""))
-        d = np.load(f, allow_pickle=True)
-        ci_per_order[order] = {
-            "point":    d["point"],
-            "lower":    d["lower"],
-            "upper":    d["upper"],
-            "sig":      d["sig"],
-            "networks": list(d["networks"]),
-        }
-        n_sig = d["sig"].sum()
-        n_tot = d["sig"].size
-        print(f"  [LOAD] CI order-{order}: "
-              f"{n_sig}/{n_tot} cells significant")
-    result["ci_per_order"] = ci_per_order
-
-    # Per-order bootstrap cubes
+    # Per-order bootstrap cubes (.npy) — loaded FIRST so we can compute p-values
     boot_per_order = {}
     boot_pattern = os.path.join(boot_dir, "cross_isc_boot_order-*.npy")
     for f in sorted(glob.glob(boot_pattern)):
@@ -191,22 +232,44 @@ def load_bootstrap_data(isc_dir):
               f"shape {boot_per_order[order].shape}")
     result["boot_per_order"] = boot_per_order
 
-    # Combined CI
-    combined_path = os.path.join(boot_dir, "cross_isc_ci_combined.npz")
-    if os.path.exists(combined_path):
-        d = np.load(combined_path, allow_pickle=True)
-        result["combined_ci"] = {
+    # Per-order CIs (.npz) — augmented with p-values from the boot cube
+    ci_per_order = {}
+    ci_pattern = os.path.join(boot_dir, "cross_isc_ci_order-*.npz")
+    for f in sorted(glob.glob(ci_pattern)):
+        order = (os.path.basename(f)
+                 .replace("cross_isc_ci_order-", "")
+                 .replace(".npz", ""))
+        d = np.load(f, allow_pickle=True)
+        entry = {
             "point":    d["point"],
             "lower":    d["lower"],
             "upper":    d["upper"],
-            "sig":      d["sig"],
+            "sig":      d["sig"],          # CI-based significance (kept for reference)
             "networks": list(d["networks"]),
         }
-        n_sig = d["sig"].sum()
-        n_tot = d["sig"].size
-        print(f"  [LOAD] combined CI: {n_sig}/{n_tot} cells significant")
-    else:
-        result["combined_ci"] = None
+
+        # ── Compute p-values from the saved bootstrap cube ──────────────────
+        if order in boot_per_order:
+            p_pos, p_neg, sig_pval = compute_pval_from_boot(
+                boot_per_order[order], entry["point"], alpha_pos, alpha_neg)
+            entry["p_pos"]    = p_pos
+            entry["p_neg"]    = p_neg
+            entry["sig_pval"] = sig_pval   # p-value–based sig (PRIMARY)
+            n_sig_ci   = entry["sig"].sum()
+            n_sig_pval = sig_pval.sum()
+            print(f"  [PVAL] order-{order}: "
+                  f"{n_sig_pval}/49 cells sig (p-val) | "
+                  f"{n_sig_ci}/49 cells sig (CI)")
+        else:
+            print(f"  [WARN] No boot cube for order-{order} — "
+                  f"p-values not computed, falling back to CI significance.")
+            entry["p_pos"]    = None
+            entry["p_neg"]    = None
+            entry["sig_pval"] = entry["sig"]
+        # ────────────────────────────────────────────────────────────────────
+
+        ci_per_order[order] = entry
+    result["ci_per_order"] = ci_per_order
 
     # Combined bootstrap cube
     combined_boot_path = os.path.join(boot_dir, "cross_isc_boot_combined.npy")
@@ -217,19 +280,56 @@ def load_bootstrap_data(isc_dir):
     else:
         result["combined_boot"] = None
 
-    # Thresholded CSV
+    # Combined CI (.npz) — augmented with p-values from the combined boot cube
+    combined_path = os.path.join(boot_dir, "cross_isc_ci_combined.npz")
+    if os.path.exists(combined_path):
+        d = np.load(combined_path, allow_pickle=True)
+        combined_ci = {
+            "point":    d["point"],
+            "lower":    d["lower"],
+            "upper":    d["upper"],
+            "sig":      d["sig"],
+            "networks": list(d["networks"]),
+        }
+
+        # ── Compute p-values for the combined result ─────────────────────────
+        if result["combined_boot"] is not None:
+            p_pos, p_neg, sig_pval = compute_pval_from_boot(
+                result["combined_boot"], combined_ci["point"],
+                alpha_pos, alpha_neg)
+            combined_ci["p_pos"]    = p_pos
+            combined_ci["p_neg"]    = p_neg
+            combined_ci["sig_pval"] = sig_pval
+            n_sig_ci   = combined_ci["sig"].sum()
+            n_sig_pval = sig_pval.sum()
+            print(f"  [PVAL] combined: "
+                  f"{n_sig_pval}/49 cells sig (p-val) | "
+                  f"{n_sig_ci}/49 cells sig (CI)")
+        else:
+            print("  [WARN] No combined boot cube — "
+                  "p-values not computed for combined result.")
+            combined_ci["p_pos"]    = None
+            combined_ci["p_neg"]    = None
+            combined_ci["sig_pval"] = combined_ci["sig"]
+        # ─────────────────────────────────────────────────────────────────────
+
+        result["combined_ci"] = combined_ci
+    else:
+        result["combined_ci"] = None
+
+    # Thresholded CSV (kept for convenience — now superseded by p-value mask)
     thresh_path = os.path.join(boot_dir, "cross_isc_combined_thresholded.csv")
     if os.path.exists(thresh_path):
         result["thresholded"] = pd.read_csv(thresh_path, index_col=0)
-        print(f"  [LOAD] thresholded combined matrix")
+        print(f"  [LOAD] thresholded combined matrix (CI-based, for reference)")
     else:
         result["thresholded"] = None
 
     return result
-# =============================================================================
 
 
-# ── Existing helpers (unchanged) ─────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
 def parse_network(roi_name):
     parts = roi_name.split("_")
     if len(parts) >= 3:
@@ -271,11 +371,6 @@ def _reorder_matrix(df):
 
 
 def _reorder_array(arr, networks_from):
-    """
-    Reorder a numpy array so rows/cols match NETWORK_ORDER.
-    networks_from: the current order of rows/cols in the array.
-    Returns: reordered array, list of full names in new order.
-    """
     present = [n for n in NETWORK_ORDER if n in networks_from]
     extra   = [n for n in networks_from if n not in NETWORK_ORDER]
     ordered = present + extra
@@ -292,7 +387,77 @@ def _cross_isc_vrange(cross_data):
     return round(float(vmax) + 0.005, 3)
 
 
+# ── Annotation builders ───────────────────────────────────────────────────────
+
+def _make_annot_with_stars(point_mat, sig_mat):
+    """Value + '*' for significant cells (CI or p-value sig)."""
+    n    = point_mat.shape[0]
+    annot = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            val = point_mat[i, j]
+            if np.isnan(val):
+                row.append("")
+            elif sig_mat[i, j]:
+                row.append(f"{val:.3f}*")
+            else:
+                row.append(f"{val:.3f}")
+        annot.append(row)
+    return annot
+
+
+def _make_annot_with_ci(point_mat, lower_mat, upper_mat, sig_mat):
+    """
+    Value + star + 95% CI bounds.
+    sig_mat may be CI-based or p-value–based — caller decides which to pass.
+    """
+    n    = point_mat.shape[0]
+    annot = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            v = point_mat[i, j]
+            lo, hi = lower_mat[i, j], upper_mat[i, j]
+            if np.isnan(v):
+                row.append("")
+            else:
+                star = "*" if sig_mat[i, j] else ""
+                row.append(f"{v:.3f}{star}\n[{lo:.2f},{hi:.2f}]")
+        annot.append(row)
+    return annot
+
+
+def _make_annot_pval(point_mat, p_pos_mat, p_neg_mat, sig_mat):
+    """
+    Value + star + (p_pos / p_neg) annotation.
+    Shows both directional p-values so readers can see which tail drove significance.
+    Example cell text:
+        0.142*
+        p+:0.012
+        p-:0.988
+    """
+    n    = point_mat.shape[0]
+    annot = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            v = point_mat[i, j]
+            if np.isnan(v):
+                row.append("")
+            else:
+                star  = "*" if sig_mat[i, j] else ""
+                pp    = p_pos_mat[i, j]
+                pn    = p_neg_mat[i, j]
+                pp_s  = "<.001" if pp < 0.001 else f"{pp:.3f}"
+                pn_s  = "<.001" if pn < 0.001 else f"{pn:.3f}"
+                row.append(f"{v:.3f}{star}\np+:{pp_s}\np-:{pn_s}")
+        annot.append(row)
+    return annot
+
+
 # ── Original figure functions (unchanged) ────────────────────────────────────
+
 def plot_network_summary(summary_df, out_path, dpi=150):
     networks = [n for n in NETWORK_COLOURS if n in summary_df["network"].unique()]
     orders   = sorted(summary_df["order"].unique())
@@ -456,7 +621,8 @@ def plot_subject_distribution(data, out_path, dpi=150):
     print(f"  [SAVED] {out_path}")
 
 
-# ── Original cross-network figures (unchanged) ───────────────────────────────
+# ── Original cross-network figures (unchanged) ────────────────────────────────
+
 def plot_cross_isc_single(matrix_df, order, out_path, vmax=None, dpi=150):
     mat = _reorder_matrix(matrix_df.copy())
     if vmax is None:
@@ -544,7 +710,6 @@ def plot_cross_isc_offdiag(cross_data, out_path, dpi=150):
                              gridspec_kw={"width_ratios": [1, 1.15]})
     fig.patch.set_facecolor("white")
 
-    # Left: mean matrix
     mean_df = pd.DataFrame(mean_mat, index=net_labels, columns=net_labels)
     raw_max = round(float(np.abs(mean_mat[~np.isnan(mean_mat)]).max()) + 0.005, 3)
     sns.heatmap(mean_df.astype(float), ax=axes[0], cmap="RdBu_r", center=0,
@@ -563,19 +728,16 @@ def plot_cross_isc_offdiag(cross_data, out_path, dpi=150):
     axes[0].tick_params(axis="x", labelsize=9, rotation=30)
     axes[0].tick_params(axis="y", labelsize=9, rotation=0)
 
-    # Right: off-diagonal
     sns.heatmap(offdiag_df.astype(float), ax=axes[1], cmap="RdBu_r", center=0,
                 vmin=-vmax, vmax=vmax, annot=True, fmt=".3f",
                 annot_kws={"size": 10}, linewidths=0.8, linecolor="#dddddd",
                 square=True, mask=np.isnan(offdiag_df.values),
-                cbar_kws={"label": "ISC deviation from diagonal (r)",
-                           "shrink": 0.75})
+                cbar_kws={"label": "ISC deviation from diagonal (r)", "shrink": 0.75})
     for i in range(n):
         axes[1].add_patch(plt.Rectangle((i, i), 1, 1, fill=True,
                           facecolor="#cccccc", edgecolor="black",
                           linewidth=1.5, clip_on=False))
-    axes[1].set_title("Off-diagonal cross-network structure\n"
-                      "(diagonal subtracted)",
+    axes[1].set_title("Off-diagonal cross-network structure\n(diagonal subtracted)",
                       fontsize=12, fontweight="bold", pad=12)
     axes[1].set_xlabel("Group mean network", fontsize=10, labelpad=6)
     axes[1].set_ylabel("Left-out subject network", fontsize=10, labelpad=6)
@@ -587,65 +749,26 @@ def plot_cross_isc_offdiag(cross_data, out_path, dpi=150):
     print(f"  [SAVED] {out_path}")
 
 
-# =============================================================================
-# === NEW (BOOTSTRAP) === Bootstrap-specific figures ==========================
-# =============================================================================
-
-def _make_annot_with_stars(point_mat, sig_mat):
-    """
-    Build a string annotation matrix: value with * for significant cells.
-    point_mat, sig_mat: same-shaped 2D arrays.
-    Returns: 2D list of strings suitable for sns.heatmap annot.
-    """
-    n = point_mat.shape[0]
-    annot = []
-    for i in range(n):
-        row = []
-        for j in range(n):
-            val = point_mat[i, j]
-            if np.isnan(val):
-                row.append("")
-            elif sig_mat[i, j]:
-                row.append(f"{val:.3f}*")
-            else:
-                row.append(f"{val:.3f}")
-        annot.append(row)
-    return annot
-
-
-def _make_annot_with_ci(point_mat, lower_mat, upper_mat, sig_mat):
-    """
-    Build annotation: "0.123*\n[0.05, 0.20]" for significant,
-                      "0.123\n[−0.01, 0.25]" for non-significant.
-    """
-    n = point_mat.shape[0]
-    annot = []
-    for i in range(n):
-        row = []
-        for j in range(n):
-            v = point_mat[i, j]
-            lo, hi = lower_mat[i, j], upper_mat[i, j]
-            if np.isnan(v):
-                row.append("")
-            else:
-                star = "*" if sig_mat[i, j] else ""
-                row.append(f"{v:.3f}{star}\n[{lo:.2f}, {hi:.2f}]")
-        annot.append(row)
-    return annot
-
+# ── Bootstrap figures (p-value–based significance) ───────────────────────────
 
 def plot_cross_isc_single_boot(ci_data, order, out_path, vmax=None, dpi=150):
     """
-    Figure 9: Per-order 7×7 with significance stars and CI annotations.
+    Figure 9: Per-order 7×7 with p-value significance (primary) and CI
+    annotations. Significance is driven by sig_pval (p_pos/p_neg thresholds).
+    Falls back to CI-based sig if p-values were not computed.
     """
-    point, lower, upper, sig, nets = (
+    point, lower, upper, nets = (
         ci_data["point"], ci_data["lower"], ci_data["upper"],
-        ci_data["sig"], ci_data["networks"])
+        ci_data["networks"])
+
+    # Use p-value sig as primary; fall back to CI sig
+    sig = ci_data["sig_pval"]
+    has_pval = ci_data["p_pos"] is not None
 
     point_r, names = _reorder_array(point, nets)
     lower_r, _     = _reorder_array(lower, nets)
     upper_r, _     = _reorder_array(upper, nets)
-    sig_r, _       = _reorder_array(sig.astype(float), nets)
+    sig_r,   _     = _reorder_array(sig.astype(float), nets)
     sig_r          = sig_r.astype(bool)
     n              = len(names)
 
@@ -653,36 +776,39 @@ def plot_cross_isc_single_boot(ci_data, order, out_path, vmax=None, dpi=150):
         vals = point_r[~np.isnan(point_r)]
         vmax = round(float(np.abs(vals).max()) + 0.005, 3)
 
-    annot = _make_annot_with_ci(point_r, lower_r, upper_r, sig_r)
+    if has_pval:
+        p_pos_r, _ = _reorder_array(ci_data["p_pos"], nets)
+        p_neg_r, _ = _reorder_array(ci_data["p_neg"], nets)
+        annot      = _make_annot_pval(point_r, p_pos_r, p_neg_r, sig_r)
+        sig_label  = "* = p_pos<0.025 or p_neg<0.025"
+    else:
+        annot     = _make_annot_with_ci(point_r, lower_r, upper_r, sig_r)
+        sig_label = "* = CI excludes zero (fallback)"
+
     annot_arr = np.array(annot, dtype=object)
 
     fig, ax = plt.subplots(figsize=(11, 9))
     fig.patch.set_facecolor("white")
-
     sns.heatmap(
         pd.DataFrame(point_r, index=names, columns=names).astype(float),
         ax=ax, cmap="RdBu_r", center=0, vmin=-vmax, vmax=vmax,
-        annot=annot_arr, fmt="", annot_kws={"size": 8},
+        annot=annot_arr, fmt="", annot_kws={"size": 7.5},
         linewidths=0.8, linecolor="#dddddd", square=True,
         cbar_kws={"label": "Mean ISC (Pearson r)", "shrink": 0.75})
 
-    # Highlight diagonal
     for i in range(n):
         ax.add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
                      edgecolor="black", linewidth=2.5, clip_on=False))
-
-    # Bold border around significant off-diagonal cells
     for i in range(n):
         for j in range(n):
             if i != j and sig_r[i, j]:
                 ax.add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
-                             edgecolor="#FFD700", linewidth=2.0,
-                             clip_on=False))
+                             edgecolor="#FFD700", linewidth=2.0, clip_on=False))
 
     ax.set_title(
-        f"Cross-Network ISC with Bootstrap CIs — Order {order}\n"
-        f"* = CI excludes zero · gold border = significant off-diagonal",
-        fontsize=12, fontweight="bold", pad=14)
+        f"Cross-Network ISC — Order {order}\n"
+        f"{sig_label}  ·  gold border = significant off-diagonal",
+        fontsize=11, fontweight="bold", pad=14)
     ax.set_xlabel("Group mean network", fontsize=11, labelpad=8)
     ax.set_ylabel("Left-out subject network", fontsize=11, labelpad=8)
     ax.tick_params(axis="x", labelsize=10, rotation=30)
@@ -695,21 +821,25 @@ def plot_cross_isc_single_boot(ci_data, order, out_path, vmax=None, dpi=150):
 
 def plot_cross_isc_combined_boot(combined_ci, out_path, dpi=150):
     """
-    Figure 10: Combined (mean over orders) matrix: left = full with CIs,
-    right = thresholded (non-significant cells blanked).
+    Figure 10: Combined matrix — left panel shows ISC values with p-value
+    annotations; right panel is thresholded using the p-value sig mask
+    (non-significant cells blanked in grey).
     """
     if combined_ci is None:
         print("  [SKIP] No combined CI data — skipping combined bootstrap figure.")
         return
 
-    point, lower, upper, sig, nets = (
+    point, lower, upper, nets = (
         combined_ci["point"], combined_ci["lower"], combined_ci["upper"],
-        combined_ci["sig"], combined_ci["networks"])
+        combined_ci["networks"])
+
+    sig      = combined_ci["sig_pval"]
+    has_pval = combined_ci["p_pos"] is not None
 
     point_r, names = _reorder_array(point, nets)
     lower_r, _     = _reorder_array(lower, nets)
     upper_r, _     = _reorder_array(upper, nets)
-    sig_r, _       = _reorder_array(sig.astype(float), nets)
+    sig_r,   _     = _reorder_array(sig.astype(float), nets)
     sig_r          = sig_r.astype(bool)
     n              = len(names)
 
@@ -719,35 +849,41 @@ def plot_cross_isc_combined_boot(combined_ci, out_path, dpi=150):
     fig, axes = plt.subplots(1, 2, figsize=(20, 8))
     fig.patch.set_facecolor("white")
 
-    # --- Left panel: full matrix with CI annotations ---
-    annot = _make_annot_with_ci(point_r, lower_r, upper_r, sig_r)
-    annot_arr = np.array(annot, dtype=object)
+    # ── Left panel: full matrix with p-value annotations ────────────────────
+    if has_pval:
+        p_pos_r, _ = _reorder_array(combined_ci["p_pos"], nets)
+        p_neg_r, _ = _reorder_array(combined_ci["p_neg"], nets)
+        annot      = _make_annot_pval(point_r, p_pos_r, p_neg_r, sig_r)
+        sig_label  = "* = p_pos<0.025 or p_neg<0.025"
+    else:
+        annot     = _make_annot_with_ci(point_r, lower_r, upper_r, sig_r)
+        sig_label = "* = CI excludes zero (fallback)"
 
-    df_full = pd.DataFrame(point_r, index=names, columns=names)
+    annot_arr = np.array(annot, dtype=object)
+    df_full   = pd.DataFrame(point_r, index=names, columns=names)
+
     sns.heatmap(df_full.astype(float), ax=axes[0], cmap="RdBu_r", center=0,
                 vmin=-vmax, vmax=vmax, annot=annot_arr, fmt="",
-                annot_kws={"size": 8}, linewidths=0.8, linecolor="#dddddd",
+                annot_kws={"size": 7.5}, linewidths=0.8, linecolor="#dddddd",
                 square=True,
                 cbar_kws={"label": "Mean ISC (r)", "shrink": 0.75})
     for i in range(n):
-        ax = axes[0]
-        ax.add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
-                     edgecolor="black", linewidth=2.5, clip_on=False))
+        axes[0].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
+                          edgecolor="black", linewidth=2.5, clip_on=False))
         for j in range(n):
             if i != j and sig_r[i, j]:
-                ax.add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
-                             edgecolor="#FFD700", linewidth=2.0,
-                             clip_on=False))
+                axes[0].add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
+                                  edgecolor="#FFD700", linewidth=2.0,
+                                  clip_on=False))
     axes[0].set_title(
-        "Combined cross-network ISC (all orders)\n"
-        "with bootstrap 95% CIs · * = significant",
+        f"Combined cross-network ISC (all orders)\n{sig_label}",
         fontsize=12, fontweight="bold", pad=12)
     axes[0].set_xlabel("Group mean network", fontsize=10, labelpad=6)
     axes[0].set_ylabel("Left-out subject network", fontsize=10, labelpad=6)
     axes[0].tick_params(axis="x", labelsize=9, rotation=30)
     axes[0].tick_params(axis="y", labelsize=9, rotation=0)
 
-    # --- Right panel: thresholded (only significant cells shown) ---
+    # ── Right panel: thresholded by p-value sig mask ─────────────────────────
     thresholded = np.where(sig_r, point_r, np.nan)
     df_thresh   = pd.DataFrame(thresholded, index=names, columns=names)
     mask_ns     = np.isnan(thresholded)
@@ -757,7 +893,6 @@ def plot_cross_isc_combined_boot(combined_ci, out_path, dpi=150):
                 annot_kws={"size": 10}, linewidths=0.8, linecolor="#dddddd",
                 square=True, mask=mask_ns,
                 cbar_kws={"label": "Mean ISC (r)", "shrink": 0.75})
-    # Grey out non-significant cells
     for i in range(n):
         for j in range(n):
             if mask_ns[i, j]:
@@ -767,10 +902,9 @@ def plot_cross_isc_combined_boot(combined_ci, out_path, dpi=150):
     for i in range(n):
         axes[1].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
                           edgecolor="black", linewidth=2.5, clip_on=False))
-
     axes[1].set_title(
-        "Thresholded: only significant cells\n"
-        "(bootstrap CI excludes zero)",
+        "Thresholded: significant cells only\n"
+        "(p_pos<0.025 or p_neg<0.025)",
         fontsize=12, fontweight="bold", pad=12)
     axes[1].set_xlabel("Group mean network", fontsize=10, labelpad=6)
     axes[1].set_ylabel("Left-out subject network", fontsize=10, labelpad=6)
@@ -785,8 +919,7 @@ def plot_cross_isc_combined_boot(combined_ci, out_path, dpi=150):
 
 def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
     """
-    Figure 11: Off-diagonal plot with a THIRD panel showing thresholded
-    version where non-significant off-diagonal cells are blanked.
+    Figure 11: Three-panel off-diagonal figure. Third panel uses p-value sig mask.
     """
     if combined_ci is None:
         print("  [SKIP] No combined CI — skipping bootstrap offdiag figure.")
@@ -796,7 +929,6 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
     if not orders:
         return
 
-    # Build mean matrix across orders (same as original offdiag)
     sample_mat = _reorder_matrix(cross_data[orders[0]].copy())
     net_labels = list(sample_mat.index)
     n          = len(net_labels)
@@ -806,24 +938,22 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
         cube[oi] = _reorder_matrix(cross_data[order].copy()).values.astype(float)
     mean_mat = np.nanmean(cube, axis=0)
 
-    # Off-diagonal deviation
     diag    = np.diag(mean_mat)
     offdiag = mean_mat - diag[:, np.newaxis]
     np.fill_diagonal(offdiag, np.nan)
 
-    # Get significance from combined CI, reordered to match
-    sig_r, _ = _reorder_array(combined_ci["sig"].astype(float),
+    # Use p-value sig mask (primary) — fall back to CI sig if unavailable
+    sig_r, _ = _reorder_array(combined_ci["sig_pval"].astype(float),
                               combined_ci["networks"])
     sig_r = sig_r.astype(bool)
 
-    # Thresholded off-diagonal: blank non-significant cells AND diagonal
     offdiag_thresh = offdiag.copy()
     for i in range(n):
         for j in range(n):
             if i == j or not sig_r[i, j]:
                 offdiag_thresh[i, j] = np.nan
 
-    vals = offdiag[~np.isnan(offdiag)]
+    vals     = offdiag[~np.isnan(offdiag)]
     vmax_off = round(float(np.abs(vals).max()) + 0.002, 3)
     raw_max  = round(float(np.abs(mean_mat[~np.isnan(mean_mat)]).max()) + 0.005, 3)
 
@@ -836,8 +966,7 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
     sns.heatmap(mean_df.astype(float), ax=axes[0], cmap="RdBu_r", center=0,
                 vmin=-raw_max, vmax=raw_max, annot=True, fmt=".3f",
                 annot_kws={"size": 9}, linewidths=0.8, linecolor="#dddddd",
-                square=True,
-                cbar_kws={"label": "Mean ISC (r)", "shrink": 0.7})
+                square=True, cbar_kws={"label": "Mean ISC (r)", "shrink": 0.7})
     for i in range(n):
         axes[0].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
                           edgecolor="black", linewidth=2.5, clip_on=False))
@@ -866,7 +995,7 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
     axes[1].tick_params(axis="x", labelsize=8, rotation=30)
     axes[1].tick_params(axis="y", labelsize=8, rotation=0)
 
-    # Panel 3: thresholded off-diagonal (only significant cells)
+    # Panel 3: thresholded off-diagonal (p-value sig only)
     offdiag_thresh_df = pd.DataFrame(offdiag_thresh, index=net_labels,
                                      columns=net_labels)
     mask_blank = np.isnan(offdiag_thresh)
@@ -885,7 +1014,7 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
         axes[2].add_patch(plt.Rectangle((i, i), 1, 1, fill=True,
                           facecolor="#cccccc", edgecolor="black",
                           linewidth=1.5, clip_on=False))
-    axes[2].set_title("Thresholded off-diagonal\n(significant cells only)",
+    axes[2].set_title("Thresholded off-diagonal\n(p_pos<0.025 or p_neg<0.025)",
                       fontsize=11, fontweight="bold", pad=10)
     axes[2].set_xlabel("Group mean network", fontsize=9, labelpad=6)
     axes[2].set_ylabel("Left-out subject network", fontsize=9, labelpad=6)
@@ -900,17 +1029,17 @@ def plot_cross_isc_offdiag_boot(cross_data, combined_ci, out_path, dpi=150):
 
 def plot_bootstrap_distributions(boot_cube, ci_data, out_path, dpi=150):
     """
-    Figure 12: Histograms of bootstrap samples for selected cells.
-    Shows: all 7 diagonal cells + the 3 strongest off-diagonal cells.
+    Figure 12: Bootstrap sample histograms for diagonal + top-3 off-diagonal.
+    Now also shows zero-centred null (boot - point) alongside the raw samples,
+    and marks the p-value thresholds on the null panel.
     """
     if boot_cube is None or ci_data is None:
         print("  [SKIP] No combined bootstrap cube — skipping distribution plot.")
         return
 
-    point, sig, nets = ci_data["point"], ci_data["sig"], ci_data["networks"]
+    point, sig, nets = ci_data["point"], ci_data["sig_pval"], ci_data["networks"]
     point_r, names = _reorder_array(point, nets)
 
-    # Reorder the boot cube to match
     present = [n for n in NETWORK_ORDER if n in nets]
     extra   = [n for n in nets if n not in NETWORK_ORDER]
     ordered = present + extra
@@ -919,11 +1048,9 @@ def plot_bootstrap_distributions(boot_cube, ci_data, out_path, dpi=150):
 
     n = len(names)
 
-    # Select cells to plot: all diagonals + top-3 off-diagonal by absolute value
     cells = []
     for i in range(n):
         cells.append((i, i, f"{names[i]}\n(within-network)", True))
-
     offdiag_vals = []
     for i in range(n):
         for j in range(n):
@@ -943,38 +1070,57 @@ def plot_bootstrap_distributions(boot_cube, ci_data, out_path, dpi=150):
     if n_rows == 1:
         axes = axes.reshape(1, -1)
 
+    sig_r, _ = _reorder_array(sig.astype(float), nets)
+    sig_r    = sig_r.astype(bool)
+
     for idx_c, (i, j, label, is_diag) in enumerate(cells):
-        ax = axes[idx_c // n_cols, idx_c % n_cols]
+        ax      = axes[idx_c // n_cols, idx_c % n_cols]
         samples = boot_r[:, i, j]
         colour  = "#4878CF" if is_diag else "#D65F5F"
 
-        ax.hist(samples[~np.isnan(samples)], bins=40, color=colour,
-                alpha=0.7, edgecolor="white", linewidth=0.3)
-        ax.axvline(point_r[i, j], color="black", linewidth=1.5,
-                   linestyle="-", label=f"point={point_r[i,j]:.3f}")
-        ax.axvline(0, color="grey", linewidth=1, linestyle="--", alpha=0.6)
+        # Shift to null (centred at zero)
+        null    = samples - point_r[i, j]
+        abs_pt  = abs(point_r[i, j])
 
-        # Show CI
-        lo = ci_data["lower"]
-        hi = ci_data["upper"]
-        lo_r, _ = _reorder_array(lo, nets)
-        hi_r, _ = _reorder_array(hi, nets)
-        ax.axvline(lo_r[i, j], color="red", linewidth=1, linestyle=":")
-        ax.axvline(hi_r[i, j], color="red", linewidth=1, linestyle=":")
+        ax.hist(null[~np.isnan(null)], bins=40, color=colour,
+                alpha=0.65, edgecolor="white", linewidth=0.3,
+                label="null (boot − point)")
+
+        # Observed value and its negative (two-tailed reference lines)
+        ax.axvline( abs_pt, color="black",  linewidth=1.5, linestyle="-",
+                    label=f"|point|={abs_pt:.3f}")
+        ax.axvline(-abs_pt, color="black",  linewidth=1.5, linestyle="-")
+        ax.axvline(0,        color="grey",  linewidth=1.0, linestyle="--",
+                    alpha=0.6, label="zero")
+
+        # p-value threshold lines on the null distribution
+        ax.axvline( abs_pt, color="red", linewidth=1.0, linestyle=":",
+                    alpha=0.8)
+        ax.axvline(-abs_pt, color="red", linewidth=1.0, linestyle=":",
+                    alpha=0.8, label="±|point| (threshold)")
+
+        # Annotate p-values if available
+        if ci_data["p_pos"] is not None:
+            lo_r, _ = _reorder_array(ci_data["p_pos"], nets)
+            hi_r, _ = _reorder_array(ci_data["p_neg"], nets)
+            pp, pn  = lo_r[i, j], hi_r[i, j]
+            star    = "  *" if sig_r[i, j] else ""
+            ax.set_xlabel(f"null ISC  p+={pp:.3f}  p-={pn:.3f}{star}",
+                          fontsize=7)
+        else:
+            ax.set_xlabel("null ISC (shifted)", fontsize=7)
 
         ax.set_title(label, fontsize=8, fontweight="bold")
         ax.tick_params(labelsize=7)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.set_xlabel("ISC (r)", fontsize=7)
 
-    # Hide unused axes
     for idx_c in range(n_cells, n_rows * n_cols):
         axes[idx_c // n_cols, idx_c % n_cols].set_visible(False)
 
     fig.suptitle(
-        "Bootstrap Distributions (combined across orders)\n"
-        "black = point estimate · red dashed = 95% CI bounds · "
-        "grey dashed = zero",
+        "Bootstrap Null Distributions (boot − point, centred at zero)\n"
+        "black lines = ±|observed|  ·  red dashed = p-value threshold  ·"
+        "  * = significant (p_pos<0.025 or p_neg<0.025)",
         fontsize=11, fontweight="bold", y=1.02)
     plt.tight_layout()
     plt.savefig(out_path, dpi=dpi, bbox_inches="tight")
@@ -982,80 +1128,216 @@ def plot_bootstrap_distributions(boot_cube, ci_data, out_path, dpi=150):
     print(f"  [SAVED] {out_path}")
 
 
-# =============================================================================
+def plot_pval_matrices(combined_ci, out_path, dpi=150):
+    """
+    Figure 13 (NEW): Side-by-side heatmaps of p_pos and p_neg for the
+    combined result, plus a summary panel showing which cells are significant.
 
+    p_pos[i,j] = fraction of null >= |point[i,j]|   (upper-tail test)
+    p_neg[i,j] = fraction of null <= -|point[i,j]|  (lower-tail test)
+
+    Cells with p_pos < 0.025 are positively significant (warm colours).
+    Cells with p_neg < 0.025 are negatively significant.
+    """
+    if combined_ci is None or combined_ci["p_pos"] is None:
+        print("  [SKIP] No p-value data in combined_ci — skipping pval_matrices.")
+        return
+
+    p_pos, p_neg, sig_pval, nets = (
+        combined_ci["p_pos"], combined_ci["p_neg"],
+        combined_ci["sig_pval"], combined_ci["networks"])
+    point = combined_ci["point"]
+
+    p_pos_r, names = _reorder_array(p_pos,   nets)
+    p_neg_r, _     = _reorder_array(p_neg,   nets)
+    sig_r,   _     = _reorder_array(sig_pval.astype(float), nets)
+    point_r, _     = _reorder_array(point,   nets)
+    sig_r          = sig_r.astype(bool)
+    n              = len(names)
+
+    # Direction mask: +1 where positively sig, -1 where negatively sig, 0 otherwise
+    direction = np.zeros((n, n))
+    direction[p_pos_r < ALPHA_POS] =  1.0
+    direction[p_neg_r < ALPHA_NEG] = -1.0
+
+    fig, axes = plt.subplots(1, 3, figsize=(26, 7))
+    fig.patch.set_facecolor("white")
+
+    # ── Panel 1: p_pos heatmap ───────────────────────────────────────────────
+    # Low p_pos = significantly positive. Use reversed Blues so low = dark.
+    p_pos_df = pd.DataFrame(p_pos_r, index=names, columns=names)
+    annot_pp = [[f"{v:.3f}" + (" *" if v < ALPHA_POS else "")
+                 for v in row] for row in p_pos_r]
+    sns.heatmap(p_pos_df, ax=axes[0], cmap="Blues_r", vmin=0, vmax=1,
+                annot=np.array(annot_pp, dtype=object), fmt="",
+                annot_kws={"size": 9}, linewidths=0.8, linecolor="#dddddd",
+                square=True,
+                cbar_kws={"label": "p_pos  (upper-tail p-value)", "shrink": 0.75})
+    for i in range(n):
+        axes[0].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
+                          edgecolor="black", linewidth=2.5, clip_on=False))
+    # Highlight sig cells with gold border
+    for i in range(n):
+        for j in range(n):
+            if p_pos_r[i, j] < ALPHA_POS:
+                axes[0].add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
+                                  edgecolor="#FFD700", linewidth=2.0,
+                                  clip_on=False))
+    axes[0].set_title(f"Upper-tail p-values (p_pos)\n"
+                      f"* = p_pos < {ALPHA_POS}  (significantly > 0)",
+                      fontsize=11, fontweight="bold", pad=10)
+    axes[0].set_xlabel("Group mean network", fontsize=9, labelpad=6)
+    axes[0].set_ylabel("Left-out subject network", fontsize=9, labelpad=6)
+    axes[0].tick_params(axis="x", labelsize=8, rotation=30)
+    axes[0].tick_params(axis="y", labelsize=8, rotation=0)
+
+    # ── Panel 2: p_neg heatmap ───────────────────────────────────────────────
+    p_neg_df = pd.DataFrame(p_neg_r, index=names, columns=names)
+    annot_pn = [[f"{v:.3f}" + (" *" if v < ALPHA_NEG else "")
+                 for v in row] for row in p_neg_r]
+    sns.heatmap(p_neg_df, ax=axes[1], cmap="Reds_r", vmin=0, vmax=1,
+                annot=np.array(annot_pn, dtype=object), fmt="",
+                annot_kws={"size": 9}, linewidths=0.8, linecolor="#dddddd",
+                square=True,
+                cbar_kws={"label": "p_neg  (lower-tail p-value)", "shrink": 0.75})
+    for i in range(n):
+        axes[1].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
+                          edgecolor="black", linewidth=2.5, clip_on=False))
+    for i in range(n):
+        for j in range(n):
+            if p_neg_r[i, j] < ALPHA_NEG:
+                axes[1].add_patch(plt.Rectangle((j, i), 1, 1, fill=False,
+                                  edgecolor="#FFD700", linewidth=2.0,
+                                  clip_on=False))
+    axes[1].set_title(f"Lower-tail p-values (p_neg)\n"
+                      f"* = p_neg < {ALPHA_NEG}  (significantly < 0)",
+                      fontsize=11, fontweight="bold", pad=10)
+    axes[1].set_xlabel("Group mean network", fontsize=9, labelpad=6)
+    axes[1].set_ylabel("Left-out subject network", fontsize=9, labelpad=6)
+    axes[1].tick_params(axis="x", labelsize=8, rotation=30)
+    axes[1].tick_params(axis="y", labelsize=8, rotation=0)
+
+    # ── Panel 3: direction summary — observed ISC coloured only where sig ────
+    # Significant positive cells → warm  |  significant negative → cool
+    # Non-significant → grey
+    vals     = point_r[~np.isnan(point_r)]
+    vmax_pt  = round(float(np.abs(vals).max()) + 0.005, 3)
+    thresh   = np.where(sig_r, point_r, np.nan)
+    thresh_df = pd.DataFrame(thresh, index=names, columns=names)
+    mask_ns   = np.isnan(thresh)
+
+    annot_dir = []
+    for i in range(n):
+        row = []
+        for j in range(n):
+            if mask_ns[i, j]:
+                row.append("n.s.")
+            else:
+                d  = "↑" if direction[i, j] > 0 else "↓"
+                pp = p_pos_r[i, j]
+                pn = p_neg_r[i, j]
+                p  = pp if direction[i, j] > 0 else pn
+                p_s = "<.001" if p < 0.001 else f"{p:.3f}"
+                row.append(f"{point_r[i,j]:.3f}{d}\np={p_s}")
+        annot_dir.append(row)
+
+    sns.heatmap(thresh_df.astype(float), ax=axes[2], cmap="RdBu_r", center=0,
+                vmin=-vmax_pt, vmax=vmax_pt,
+                annot=np.array(annot_dir, dtype=object), fmt="",
+                annot_kws={"size": 8}, linewidths=0.8, linecolor="#dddddd",
+                square=True, mask=mask_ns,
+                cbar_kws={"label": "Mean ISC (r)", "shrink": 0.75})
+    for i in range(n):
+        for j in range(n):
+            if mask_ns[i, j]:
+                axes[2].add_patch(plt.Rectangle(
+                    (j, i), 1, 1, fill=True, facecolor="#e8e8e8",
+                    edgecolor="#dddddd", linewidth=0.5, clip_on=False))
+    for i in range(n):
+        axes[2].add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
+                          edgecolor="black", linewidth=2.5, clip_on=False))
+    axes[2].set_title(
+        "Significant cells only (combined)\n"
+        f"↑ p_pos<{ALPHA_POS}  ↓ p_neg<{ALPHA_NEG}  grey = n.s.",
+        fontsize=11, fontweight="bold", pad=10)
+    axes[2].set_xlabel("Group mean network", fontsize=9, labelpad=6)
+    axes[2].set_ylabel("Left-out subject network", fontsize=9, labelpad=6)
+    axes[2].tick_params(axis="x", labelsize=8, rotation=30)
+    axes[2].tick_params(axis="y", labelsize=8, rotation=0)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    plt.close()
+    print(f"  [SAVED] {out_path}")
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
+    # Allow CLI to override module-level thresholds
+    global ALPHA_POS, ALPHA_NEG
+    ALPHA_POS = args.alpha_pos
+    ALPHA_NEG = args.alpha_neg
+
     print("=" * 60)
     print("  ISC Visualisation")
     if args.bootstrap:
-        print("  BOOTSTRAP figures enabled")
+        print(f"  BOOTSTRAP figures enabled  "
+              f"(alpha_pos={ALPHA_POS}, alpha_neg={ALPHA_NEG})")
     print("=" * 60)
     print(f"  isc_dir : {args.isc_dir}")
     print(f"  out_dir : {args.out_dir}")
     print("=" * 60 + "\n")
 
-    # Load data
     print("[LOAD] Per-ROI ISC files...")
     data = load_all_orders(args.isc_dir)
 
     print("\n[LOAD] Cross-network ISC matrix files...")
     cross_data = load_cross_isc_orders(args.isc_dir)
 
-    # === NEW (BOOTSTRAP) === load bootstrap data if flag is set ===============
     boot_data = None
     if args.bootstrap:
-        print("\n[LOAD] Bootstrap data...")
-        boot_data = load_bootstrap_data(args.isc_dir)
+        print("\n[LOAD] Bootstrap data + computing p-values...")
+        boot_data = load_bootstrap_data(args.isc_dir, ALPHA_POS, ALPHA_NEG)
         if boot_data is None:
             print("  [WARN] --bootstrap flag set but no bootstrap data found.")
-            print("         Bootstrap figures will be skipped.")
-    # =========================================================================
 
-    # Network summary
     summary_df = build_network_summary(data)
 
-    # Figure 1
     print("\n[FIG 1] Network summary bar chart...")
     plot_network_summary(summary_df,
                          os.path.join(args.out_dir, "network_summary.png"),
                          dpi=args.dpi)
 
-    # Figure 2
     print("\n[FIG 2] Network × Order heatmap...")
     plot_heatmap(summary_df,
                  os.path.join(args.out_dir, "heatmap.png"),
                  dpi=args.dpi)
 
-    # Figure 3
     print("\n[FIG 3] Top-ROI bar charts per order...")
     for order, df in data.items():
         plot_top_rois(df, order, args.top_n,
                       os.path.join(args.out_dir, f"top_rois_order-{order}.png"),
                       dpi=args.dpi)
 
-    # Figure 4
     if not args.no_brain:
         print("\n[FIG 4] Brain glass maps per order...")
         for order, df in data.items():
             plot_brain_map(df, order,
-                           os.path.join(args.out_dir,
-                                        f"brain_order-{order}.png"),
+                           os.path.join(args.out_dir, f"brain_order-{order}.png"),
                            dpi=args.dpi)
     else:
         print("\n[FIG 4] Brain maps skipped (--no_brain).")
 
-    # Figure 5
     print("\n[FIG 5] Per-subject ISC distribution...")
     plot_subject_distribution(data,
                               os.path.join(args.out_dir,
                                            "subject_distribution.png"),
                               dpi=args.dpi)
 
-    # Figures 6–8: cross-network (original, unchanged)
     if cross_data:
         shared_vmax = _cross_isc_vrange(cross_data)
 
@@ -1079,12 +1361,10 @@ def main():
     else:
         print("\n[FIG 6–8] Cross-network figures skipped.")
 
-    # === NEW (BOOTSTRAP) === Figures 9–12 ====================================
     if boot_data is not None and cross_data:
 
-        # Figure 9: per-order 7×7 with CIs and significance
         if boot_data["ci_per_order"]:
-            print("\n[FIG 9] Per-order cross-network ISC with bootstrap CIs...")
+            print("\n[FIG 9] Per-order cross-network ISC with p-value significance...")
             for order, ci in boot_data["ci_per_order"].items():
                 plot_cross_isc_single_boot(
                     ci, order,
@@ -1092,34 +1372,35 @@ def main():
                                  f"cross_isc_order-{order}_boot.png"),
                     dpi=args.dpi)
 
-        # Figure 10: combined matrix with CIs + thresholded
-        print("\n[FIG 10] Combined cross-network ISC with bootstrap CIs...")
+        print("\n[FIG 10] Combined cross-network ISC with p-value significance...")
         plot_cross_isc_combined_boot(
             boot_data["combined_ci"],
             os.path.join(args.out_dir, "cross_isc_combined_boot.png"),
             dpi=args.dpi)
 
-        # Figure 11: off-diagonal with thresholded third panel
-        print("\n[FIG 11] Off-diagonal with bootstrap thresholding...")
+        print("\n[FIG 11] Off-diagonal with p-value thresholding...")
         plot_cross_isc_offdiag_boot(
             cross_data,
             boot_data["combined_ci"],
             os.path.join(args.out_dir, "cross_isc_offdiag_boot.png"),
             dpi=args.dpi)
 
-        # Figure 12: bootstrap distribution histograms
-        print("\n[FIG 12] Bootstrap distribution histograms...")
+        print("\n[FIG 12] Bootstrap null distribution histograms...")
         plot_bootstrap_distributions(
             boot_data["combined_boot"],
             boot_data["combined_ci"],
             os.path.join(args.out_dir, "bootstrap_distributions.png"),
             dpi=args.dpi)
 
-    elif args.bootstrap:
-        print("\n[FIG 9–12] Bootstrap figures skipped (no data found).")
-    # =========================================================================
+        print("\n[FIG 13] p_pos / p_neg / direction summary matrices...")
+        plot_pval_matrices(
+            boot_data["combined_ci"],
+            os.path.join(args.out_dir, "pval_matrices.png"),
+            dpi=args.dpi)
 
-    # Summary
+    elif args.bootstrap:
+        print("\n[FIG 9–13] Bootstrap figures skipped (no data found).")
+
     print("\n" + "=" * 60)
     print("  Done. Figures saved:")
     print("=" * 60)
