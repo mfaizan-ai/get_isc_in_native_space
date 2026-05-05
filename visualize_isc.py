@@ -107,7 +107,6 @@ def parse_args():
 
 
 # ── Data loaders ─────────────────────────────────────────────────────────────
-
 def load_all_orders(isc_dir):
     pattern = os.path.join(isc_dir, "isc_order-*.csv")
     files   = sorted(glob.glob(pattern))
